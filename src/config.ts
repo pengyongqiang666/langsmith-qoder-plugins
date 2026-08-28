@@ -1,6 +1,6 @@
 /**
  * Configuration loading. Cascade (later wins): defaults → global file → local
- * file → environment (LANGSMITH_CURSOR_* / LANGSMITH_*).
+ * file → environment (LANGSMITH_QODER_* / LANGSMITH_*).
  */
 
 import { readFileSync } from "node:fs";
@@ -21,7 +21,7 @@ declare const __LS_INTEGRATION_VERSION__: string;
 export const LS_INTEGRATION_VERSION: string | undefined =
   typeof __LS_INTEGRATION_VERSION__ !== "undefined"
     ? __LS_INTEGRATION_VERSION__
-    : process.env.LANGSMITH_CURSOR_INTEGRATION_VERSION || undefined;
+    : process.env.LANGSMITH_QODER_INTEGRATION_VERSION || undefined;
 
 /** Host used to build a canonical https `repository_url` from a parsed provider. */
 const PROVIDER_HOSTS: Record<string, string> = {
@@ -42,15 +42,9 @@ export interface Config {
   replicas?: RunTreeConfig["replicas"];
   /** Identity / repo / user metadata attached to every run. */
   customMetadata?: Record<string, unknown>;
-  /** Enrich turns with image/file attachment bytes from Cursor's DB (default on). */
-  attachmentsEnabled: boolean;
-  /** Recover the turn's system prompt from Cursor's DB (default on). */
-  systemPromptEnabled: boolean;
-  /** Override the Cursor state.vscdb path used for DB enrichment. */
-  cursorDbPath?: string;
   /** Redact detected secrets from traced data before upload (default on). */
   redact: boolean;
-  /** Extra user-supplied redaction rules (from LANGSMITH_CURSOR_REDACT_EXTRA). */
+  /** Extra user-supplied redaction rules (from LANGSMITH_QODER_REDACT_EXTRA). */
   redactExtraRules?: StringNodeRule[];
 }
 
@@ -90,13 +84,13 @@ function parseRedactExtraRules(value: unknown): StringNodeRule[] | undefined {
   const parsed = parseJson<unknown>(value);
   if (parsed === undefined) return undefined;
   if (!Array.isArray(parsed)) {
-    logError("LANGSMITH_CURSOR_REDACT_EXTRA must be a JSON array of { pattern, replace }.");
+    logError("LANGSMITH_QODER_REDACT_EXTRA must be a JSON array of { pattern, replace }.");
     return undefined;
   }
   const valid: StringNodeRule[] = [];
   for (const rule of parsed) {
     if (!isRedactRule(rule)) {
-      logError(`Skipping invalid LANGSMITH_CURSOR_REDACT_EXTRA rule: ${JSON.stringify(rule)}`);
+      logError(`Skipping invalid LANGSMITH_QODER_REDACT_EXTRA rule: ${JSON.stringify(rule)}`);
       continue;
     }
     valid.push(rule);
@@ -113,10 +107,6 @@ interface FileConfig {
   project?: string;
   metadata?: Record<string, unknown>;
   replicas?: Array<Record<string, unknown>>;
-  attachments?: boolean;
-  system_prompt?: boolean;
-  step_fidelity?: boolean;
-  cursor_db_path?: string;
   redact?: boolean;
 }
 
@@ -128,9 +118,9 @@ function readConfigFile(file: string): FileConfig | undefined {
   }
 }
 
-/** Read LANGSMITH_CURSOR_<suffix>, falling back to LANGSMITH_<suffix>. */
+/** Read LANGSMITH_QODER_<suffix>, falling back to LANGSMITH_<suffix>. */
 function getEnv(suffix: string): string | undefined {
-  return process.env[`LANGSMITH_CURSOR_${suffix}`] ?? process.env[`LANGSMITH_${suffix}`];
+  return process.env[`LANGSMITH_QODER_${suffix}`] ?? process.env[`LANGSMITH_${suffix}`];
 }
 
 /** Normalize a snake_case or camelCase replica entry to the LangSmith SDK shape. */
@@ -225,10 +215,10 @@ export function getGitInfo(cwd: string): { branch?: string; commit?: string } {
 // ─── Main loader ─────────────────────────────────────────────────────────────
 
 export function loadConfig(options?: { cwd?: string }): Config {
-  const cwd = options?.cwd ?? process.env.CURSOR_PROJECT_DIR ?? process.cwd();
+  const cwd = options?.cwd ?? process.env.QODER_CWD ?? process.cwd();
 
-  const globalFile = readConfigFile(join(homedir(), ".cursor", "langsmith.json"));
-  const localFile = readConfigFile(join(cwd, ".cursor", "langsmith.json"));
+  const globalFile = readConfigFile(join(homedir(), ".qoder", "langsmith.json"));
+  const localFile = readConfigFile(join(cwd, ".qoder", "langsmith.json"));
 
   const envEnabled = parseBoolean(process.env.TRACE_TO_LANGSMITH);
   const envMetadata = parseJson(getEnv("METADATA"));
@@ -244,25 +234,11 @@ export function loadConfig(options?: { cwd?: string }): Config {
 
   const replicas = normalizeReplicas(envReplicas ?? localFile?.replicas ?? globalFile?.replicas);
 
-  // Attachment enrichment defaults ON; opt out via config or LANGSMITH_CURSOR_ATTACHMENTS.
-  const attachmentsEnabled =
-    parseBoolean(getEnv("ATTACHMENTS")) ??
-    localFile?.attachments ??
-    globalFile?.attachments ??
-    true;
-  // System-prompt enrichment defaults ON; opt out via config or LANGSMITH_CURSOR_SYSTEM_PROMPT.
-  const systemPromptEnabled =
-    parseBoolean(getEnv("SYSTEM_PROMPT")) ??
-    localFile?.system_prompt ??
-    globalFile?.system_prompt ??
-    true;
-  const cursorDbPath = getEnv("DB_PATH") ?? localFile?.cursor_db_path ?? globalFile?.cursor_db_path;
-
   const redact = parseBoolean(getEnv("REDACT")) ?? localFile?.redact ?? globalFile?.redact ?? true;
   const redactExtraRules = parseRedactExtraRules(getEnv("REDACT_EXTRA"));
 
   const stateFilePath =
-    process.env.LANGSMITH_CURSOR_STATE_FILE ?? join(homedir(), ".cursor", "langsmith-state.json");
+    process.env.LANGSMITH_QODER_STATE_FILE ?? join(homedir(), ".qoder", "langsmith-state.json");
 
   // coding-agent-v1 base metadata (later spreads win). Identity literals are
   // owned by codingAgentMetadata(), so they're not here.
@@ -281,7 +257,7 @@ export function loadConfig(options?: { cwd?: string }): Config {
   if (git.branch) baseMetadata.git_branch = git.branch;
   if (git.commit) baseMetadata.git_commit_sha = git.commit;
 
-  // user_id is not exposed by Cursor's hooks; user_email is added per-turn in buildTurnRuns.
+  // user_id is not exposed by Qoder's hooks; user_email is added per-turn in buildTurnRuns.
   baseMetadata.local_username = userInfo().username;
 
   const fileMetadata = { ...globalFile?.metadata, ...localFile?.metadata };
@@ -300,9 +276,6 @@ export function loadConfig(options?: { cwd?: string }): Config {
     stateFilePath,
     replicas,
     customMetadata,
-    attachmentsEnabled,
-    systemPromptEnabled,
-    cursorDbPath,
     redact,
     redactExtraRules,
   };

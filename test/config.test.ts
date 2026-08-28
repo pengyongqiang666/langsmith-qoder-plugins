@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, parseRepoName } from "../src/config.js";
 
-function writeCursorConfig(dir: string, cfg: Record<string, unknown>): void {
-  mkdirSync(join(dir, ".cursor"), { recursive: true });
-  writeFileSync(join(dir, ".cursor", "langsmith.json"), JSON.stringify(cfg));
+function writeQoderConfig(dir: string, cfg: Record<string, unknown>): void {
+  mkdirSync(join(dir, ".qoder"), { recursive: true });
+  writeFileSync(join(dir, ".qoder", "langsmith.json"), JSON.stringify(cfg));
 }
 
 afterEach(() => {
@@ -16,30 +16,31 @@ afterEach(() => {
 function clearEnv(): void {
   for (const k of [
     "TRACE_TO_LANGSMITH",
+    "QODER_CWD",
     "LANGSMITH_API_KEY",
-    "LANGSMITH_CURSOR_API_KEY",
+    "LANGSMITH_QODER_API_KEY",
     "LANGSMITH_ENDPOINT",
-    "LANGSMITH_CURSOR_ENDPOINT",
+    "LANGSMITH_QODER_ENDPOINT",
     "LANGSMITH_PROJECT",
-    "LANGSMITH_CURSOR_PROJECT",
-    "LANGSMITH_CURSOR_DEBUG",
-    "LANGSMITH_CURSOR_STATE_FILE",
-    "LANGSMITH_CURSOR_REDACT",
-    "LANGSMITH_CURSOR_REDACT_EXTRA",
+    "LANGSMITH_QODER_PROJECT",
+    "LANGSMITH_QODER_DEBUG",
+    "LANGSMITH_QODER_STATE_FILE",
+    "LANGSMITH_QODER_REDACT",
+    "LANGSMITH_QODER_REDACT_EXTRA",
   ]) {
     vi.stubEnv(k, undefined as unknown as string);
   }
 }
 
 describe("loadConfig cascade", () => {
-  it("local .cursor/langsmith.json overrides global; env overrides both", () => {
+  it("local .qoder/langsmith.json overrides global; env overrides both", () => {
     clearEnv();
     const home = mkdtempSync(join(tmpdir(), "home-"));
     const proj = mkdtempSync(join(tmpdir(), "proj-"));
     vi.stubEnv("HOME", home);
 
-    writeCursorConfig(home, { enabled: true, api_key: "global-key", project: "global-proj" });
-    writeCursorConfig(proj, { project: "local-proj" });
+    writeQoderConfig(home, { enabled: true, api_key: "global-key", project: "global-proj" });
+    writeQoderConfig(proj, { project: "local-proj" });
 
     const cfg = loadConfig({ cwd: proj });
     expect(cfg.enabled).toBe(true);
@@ -58,7 +59,7 @@ describe("loadConfig cascade", () => {
     vi.stubEnv("HOME", home);
     const cfg = loadConfig({ cwd: proj });
     expect(cfg.enabled).toBe(false);
-    expect(cfg.project).toBe("cursor");
+    expect(cfg.project).toBe("qoder");
     expect(cfg.apiUrl).toBe("https://api.smith.langchain.com");
   });
 
@@ -67,27 +68,27 @@ describe("loadConfig cascade", () => {
     const home = mkdtempSync(join(tmpdir(), "home-"));
     vi.stubEnv("HOME", home);
     vi.stubEnv("TRACE_TO_LANGSMITH", "true");
-    vi.stubEnv("LANGSMITH_CURSOR_API_KEY", "k");
+    vi.stubEnv("LANGSMITH_QODER_API_KEY", "k");
     const cfg = loadConfig({ cwd: home });
     expect(cfg.enabled).toBe(true);
     expect(cfg.apiKey).toBe("k");
   });
 
-  it("redaction defaults on; LANGSMITH_CURSOR_REDACT=false disables it", () => {
+  it("redaction defaults on; LANGSMITH_QODER_REDACT=false disables it", () => {
     clearEnv();
     const home = mkdtempSync(join(tmpdir(), "home-"));
     vi.stubEnv("HOME", home);
     expect(loadConfig({ cwd: home }).redact).toBe(true);
-    vi.stubEnv("LANGSMITH_CURSOR_REDACT", "false");
+    vi.stubEnv("LANGSMITH_QODER_REDACT", "false");
     expect(loadConfig({ cwd: home }).redact).toBe(false);
   });
 
-  it("parses LANGSMITH_CURSOR_REDACT_EXTRA; skips invalid rules", () => {
+  it("parses LANGSMITH_QODER_REDACT_EXTRA; skips invalid rules", () => {
     clearEnv();
     const home = mkdtempSync(join(tmpdir(), "home-"));
     vi.stubEnv("HOME", home);
     vi.stubEnv(
-      "LANGSMITH_CURSOR_REDACT_EXTRA",
+      "LANGSMITH_QODER_REDACT_EXTRA",
       JSON.stringify([{ pattern: "sk-\\w+", replace: "X" }, { pattern: 42 }, { replace: "Y" }]),
     );
     expect(loadConfig({ cwd: home }).redactExtraRules).toEqual([
@@ -106,9 +107,9 @@ describe("loadConfig cascade", () => {
 
 describe("parseRepoName", () => {
   it("extracts owner/repo from common remotes", () => {
-    expect(parseRepoName("git@github.com:langchain-ai/langsmith-cursor-plugins.git ")).toEqual({
+    expect(parseRepoName("git@github.com:langchain-ai/langsmith-qoder-plugins.git ")).toEqual({
       provider: "github",
-      name: "langchain-ai/langsmith-cursor-plugins",
+      name: "langchain-ai/langsmith-qoder-plugins",
     });
     expect(parseRepoName("https://gitlab.com/acme/widget.git ")).toEqual({
       provider: "gitlab",

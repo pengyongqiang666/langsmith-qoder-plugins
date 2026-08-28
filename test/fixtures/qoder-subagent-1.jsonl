@@ -1,0 +1,8 @@
+{"type":"session_meta","sessionId":"subagent-conv-1","data":{"meta_type":"session_info","content":{"mode":"agent","session_type":"assistant"}}}
+{"type":"user","message":{"role":"user","content":"explore the repository structure"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I'll look around the repo first."}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"call_a","name":"Read","input":{"file_path":"/repo/a.ts"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_a","content":"contents of a.ts","is_error":false}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"call_b","name":"Grep","input":{"pattern":"foo"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_b","content":"no matches found","is_error":true}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Exploration complete: found the entry point."}]}}

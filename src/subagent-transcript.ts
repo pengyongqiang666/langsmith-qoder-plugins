@@ -1,86 +1,64 @@
 /**
- * Match a subagent transcript by task text to recover its child conversation_id
- * and final answer from `subagents/*.jsonl`. Best-effort; never throws.
+ * Recover a subagent's tool calls and final answer from its transcript JSONL
+ * (Qoder's `agent_transcript_path`). Best-effort; never throws.
  */
 
-import { readFileSync, readdirSync, statSync } from "node:fs";
-import { dirname, join, basename } from "node:path";
-import { parseSubagentTranscript, type SubagentToolCall } from "./normalize.js";
 import { isRecord } from "./normalize.js";
+import type { ResolvedSubagent, ResolvedSubagentTool } from "./reducer.js";
+import { readJsonl, transcriptSessionId, assistantContent, toolResults } from "./transcript.js";
+import * as logger from "./logger.js";
 
-export interface ResolvedSubagentTranscript {
-  /** Basename of the matched transcript file (= the subagent's conversation_id). */
-  childConversationId: string;
-  toolCalls: SubagentToolCall[];
-  resultText?: string;
-}
+/** UI-only pseudo-tools with no I/O worth tracing. */
+const PSEUDO_TOOLS = new Set(["UpdateCurrentStep", "TodoWrite", "todo_write"]);
 
-/** Collapse all whitespace runs to single spaces for tolerant matching. */
-function normalizeWs(text: string): string {
-  return text.replace(/\s+/g, " ").trim();
-}
-
-function readJsonl(path: string): unknown[] {
-  const rows: unknown[] = [];
-  for (const line of readFileSync(path, "utf-8").split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    try {
-      rows.push(JSON.parse(trimmed));
-    } catch {
-      /* skip malformed line */
-    }
-  }
-  return rows;
-}
-
-/** Concatenate the text parts of the first user row. */
-function firstUserText(rows: unknown[]): string {
-  for (const row of rows) {
-    if (!isRecord(row) || row.role !== "user") continue;
-    const content = isRecord(row.message) ? row.message.content : undefined;
-    if (!Array.isArray(content)) continue;
-    return content
-      .filter((p): p is Record<string, unknown> => isRecord(p) && p.type === "text")
-      .map((p) => (typeof p.text === "string" ? p.text : ""))
-      .join("");
-  }
-  return "";
-}
-
-/** Find and parse the `task` transcript under `subagents/`: task-prefix match, else newest. */
+/**
+ * Parse a subagent transcript into ordered tool calls (input + output + error)
+ * and its final assistant text. Returns undefined when nothing is recoverable.
+ */
 export function resolveSubagentTranscript(
-  parentTranscriptPath: string | null | undefined,
-  task: string | undefined,
-): ResolvedSubagentTranscript | undefined {
-  if (!parentTranscriptPath) return undefined;
+  transcriptPath: string | null | undefined,
+  readRows: (path: string) => unknown[] = readJsonl,
+): ResolvedSubagent | undefined {
+  if (!transcriptPath) return undefined;
+  let rows: unknown[];
   try {
-    const dir = join(dirname(parentTranscriptPath), "subagents");
-    const files = readdirSync(dir).filter((f) => f.endsWith(".jsonl"));
-    if (files.length === 0) return undefined;
-
-    const candidates = files.map((f) => {
-      const full = join(dir, f);
-      return { full, child: basename(f, ".jsonl"), mtime: statSync(full).mtimeMs };
-    });
-
-    const wanted = task ? normalizeWs(task).slice(0, 120) : "";
-    let chosen: (typeof candidates)[number] & { rows?: unknown[] };
-
-    if (candidates.length === 1) {
-      chosen = candidates[0];
-    } else {
-      const matches = candidates
-        .map((c) => ({ ...c, rows: readJsonl(c.full) }))
-        .filter((c) => wanted !== "" && normalizeWs(firstUserText(c.rows)).includes(wanted));
-      const pool = matches.length > 0 ? matches : candidates;
-      chosen = pool.slice().sort((a, b) => b.mtime - a.mtime)[0];
-    }
-
-    const rows = chosen.rows ?? readJsonl(chosen.full);
-    const { toolCalls, resultText } = parseSubagentTranscript(rows);
-    return { childConversationId: chosen.child, toolCalls, resultText };
-  } catch {
+    rows = readRows(transcriptPath);
+  } catch (err) {
+    logger.debug(`subagent-transcript: read failed: ${err}`);
     return undefined;
   }
+  if (rows.length === 0) return undefined;
+
+  const results = toolResults(rows);
+  const tools: ResolvedSubagentTool[] = [];
+  let resultText: string | undefined;
+
+  for (const row of rows) {
+    const content = assistantContent(row);
+    if (!content) continue;
+    for (const part of content) {
+      if (!isRecord(part)) continue;
+      if (part.type === "tool_use" && typeof part.name === "string") {
+        if (PSEUDO_TOOLS.has(part.name)) continue;
+        const id = typeof part.id === "string" ? part.id : undefined;
+        const result = id ? results.get(id) : undefined;
+        tools.push({
+          name: part.name,
+          input: isRecord(part.input) ? part.input : {},
+          output: result && !result.isError ? result.content : undefined,
+          error: result?.isError ? result.content : undefined,
+        });
+      } else if (part.type === "text" && typeof part.text === "string" && part.text.trim()) {
+        resultText = part.text; // keep the last non-empty assistant text
+      }
+    }
+  }
+
+  if (tools.length === 0 && !resultText) return undefined;
+
+  return {
+    childConversationId: transcriptSessionId(rows),
+    tools: tools.length > 0 ? tools : undefined,
+    resultText,
+  };
 }

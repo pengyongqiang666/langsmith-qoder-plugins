@@ -1,29 +1,29 @@
 #!/usr/bin/env node
 /**
- * PostToolUseFailure hook — appends a failed tool call to the current turn buffer.
+ * UserPromptSubmit hook — opens a new turn buffer for this request round.
  */
 
 import { readStdin } from "../utils/stdin.js";
 import { initHook } from "../utils/hook-init.js";
 import { atomicUpdateState } from "../state.js";
-import { reducePostToolUseFailure } from "../reducer.js";
+import { reduceUserPromptSubmit } from "../reducer.js";
 import { error, debug } from "../logger.js";
-import type { PostToolUseFailureInput } from "../types.js";
+import type { UserPromptSubmitInput } from "../types.js";
 
 async function main(): Promise<void> {
-  const input = await readStdin<PostToolUseFailureInput>();
+  const input = await readStdin<UserPromptSubmitInput>();
   const config = initHook(input.cwd);
   if (!config) return;
 
-  debug(`PostToolUseFailure ${input.tool_name} session=${input.session_id}`);
+  debug(`UserPromptSubmit session=${input.session_id} req=${input.request_set_id}`);
   await atomicUpdateState(config.stateFilePath, (s) =>
-    reducePostToolUseFailure(s, input, Date.now()),
+    reduceUserPromptSubmit(s, input, Date.now()),
   );
 }
 
 main().catch((err) => {
   try {
-    error(`PostToolUseFailure hook error: ${err}`);
+    error(`UserPromptSubmit hook error: ${err}`);
   } catch {
     /* last resort */
   }

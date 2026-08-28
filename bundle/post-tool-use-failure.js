@@ -28,7 +28,7 @@ import { appendFileSync, mkdirSync, statSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
 import { homedir } from "node:os";
 var MAX_LOG_BYTES = 5 * 1024 * 1024;
-var LOG_FILE = process.env.LANGSMITH_CURSOR_LOG_FILE ?? `${homedir()}/.cursor/langsmith-hook.log`;
+var LOG_FILE = process.env.LANGSMITH_QODER_LOG_FILE ?? `${homedir()}/.qoder/langsmith-hook.log`;
 var debugEnabled = false;
 function initLogger(debug2) {
   debugEnabled = debug2;
@@ -62,11 +62,11 @@ function debug(message) {
 }
 
 // dist/constants.js
-var DEFAULT_PROJECT = "cursor";
+var DEFAULT_PROJECT = "qoder";
 
 // dist/config.js
 import { homedir as homedir2 } from "node:os";
-var LS_INTEGRATION_VERSION = true ? "0.3.5" : process.env.LANGSMITH_CURSOR_INTEGRATION_VERSION || void 0;
+var LS_INTEGRATION_VERSION = true ? "0.1.0" : process.env.LANGSMITH_QODER_INTEGRATION_VERSION || void 0;
 var PROVIDER_HOSTS = {
   github: "github.com",
   gitlab: "gitlab.com",
@@ -106,13 +106,13 @@ function parseRedactExtraRules(value) {
   if (parsed === void 0)
     return void 0;
   if (!Array.isArray(parsed)) {
-    error("LANGSMITH_CURSOR_REDACT_EXTRA must be a JSON array of { pattern, replace }.");
+    error("LANGSMITH_QODER_REDACT_EXTRA must be a JSON array of { pattern, replace }.");
     return void 0;
   }
   const valid = [];
   for (const rule of parsed) {
     if (!isRedactRule(rule)) {
-      error(`Skipping invalid LANGSMITH_CURSOR_REDACT_EXTRA rule: ${JSON.stringify(rule)}`);
+      error(`Skipping invalid LANGSMITH_QODER_REDACT_EXTRA rule: ${JSON.stringify(rule)}`);
       continue;
     }
     valid.push(rule);
@@ -127,7 +127,7 @@ function readConfigFile(file) {
   }
 }
 function getEnv(suffix) {
-  return process.env[`LANGSMITH_CURSOR_${suffix}`] ?? process.env[`LANGSMITH_${suffix}`];
+  return process.env[`LANGSMITH_QODER_${suffix}`] ?? process.env[`LANGSMITH_${suffix}`];
 }
 function normalizeReplicas(replicas) {
   if (!Array.isArray(replicas))
@@ -210,9 +210,9 @@ function getGitInfo(cwd) {
   return result;
 }
 function loadConfig(options) {
-  const cwd = options?.cwd ?? process.env.CURSOR_PROJECT_DIR ?? process.cwd();
-  const globalFile = readConfigFile(join(homedir2(), ".cursor", "langsmith.json"));
-  const localFile = readConfigFile(join(cwd, ".cursor", "langsmith.json"));
+  const cwd = options?.cwd ?? process.env.QODER_CWD ?? process.cwd();
+  const globalFile = readConfigFile(join(homedir2(), ".qoder", "langsmith.json"));
+  const localFile = readConfigFile(join(cwd, ".qoder", "langsmith.json"));
   const envEnabled = parseBoolean(process.env.TRACE_TO_LANGSMITH);
   const envMetadata = parseJson(getEnv("METADATA"));
   const envReplicas = parseJson(getEnv("RUNS_ENDPOINTS"));
@@ -223,12 +223,9 @@ function loadConfig(options) {
   const project = getEnv("PROJECT") ?? localFile?.project ?? globalFile?.project ?? DEFAULT_PROJECT;
   const debug2 = envDebug ?? false;
   const replicas = normalizeReplicas(envReplicas ?? localFile?.replicas ?? globalFile?.replicas);
-  const attachmentsEnabled = parseBoolean(getEnv("ATTACHMENTS")) ?? localFile?.attachments ?? globalFile?.attachments ?? true;
-  const systemPromptEnabled = parseBoolean(getEnv("SYSTEM_PROMPT")) ?? localFile?.system_prompt ?? globalFile?.system_prompt ?? true;
-  const cursorDbPath = getEnv("DB_PATH") ?? localFile?.cursor_db_path ?? globalFile?.cursor_db_path;
   const redact = parseBoolean(getEnv("REDACT")) ?? localFile?.redact ?? globalFile?.redact ?? true;
   const redactExtraRules = parseRedactExtraRules(getEnv("REDACT_EXTRA"));
-  const stateFilePath = process.env.LANGSMITH_CURSOR_STATE_FILE ?? join(homedir2(), ".cursor", "langsmith-state.json");
+  const stateFilePath = process.env.LANGSMITH_QODER_STATE_FILE ?? join(homedir2(), ".qoder", "langsmith-state.json");
   const baseMetadata = { cwd };
   if (LS_INTEGRATION_VERSION)
     baseMetadata.ls_integration_version = LS_INTEGRATION_VERSION;
@@ -260,9 +257,6 @@ function loadConfig(options) {
     stateFilePath,
     replicas,
     customMetadata,
-    attachmentsEnabled,
-    systemPromptEnabled,
-    cursorDbPath,
     redact,
     redactExtraRules
   };
@@ -276,7 +270,7 @@ function initHook(cwd) {
     return null;
   }
   if (!config.apiKey && (!config.replicas || config.replicas.length === 0)) {
-    error("Tracing enabled but no API key set (langsmith.json api_key, LANGSMITH_CURSOR_API_KEY, or LANGSMITH_API_KEY) and no replicas configured");
+    error("Tracing enabled but no API key set (langsmith.json api_key, LANGSMITH_QODER_API_KEY, or LANGSMITH_API_KEY) and no replicas configured");
     return null;
   }
   return config;
@@ -347,47 +341,92 @@ function newTurnBuffer(generationId, startMs) {
 }
 var CONVERSATION_MAX_AGE_MS = 24 * 60 * 60 * 1e3;
 
-// dist/normalize.js
-function preferModel(current, incoming) {
-  if (incoming && incoming.toLowerCase() !== "default")
-    return incoming;
-  return current ?? incoming;
-}
-
 // dist/reducer.js
+var ACTIVE_TURN = "__active__";
+var PENDING_TOOL_MAX_AGE_MS = 10 * 60 * 1e3;
+function turnKey(input) {
+  return input.request_set_id && input.request_set_id.length > 0 ? input.request_set_id : ACTIVE_TURN;
+}
 function touch(conv) {
   conv.updated = (/* @__PURE__ */ new Date()).toISOString();
 }
+function latestTurnId(turns) {
+  let best;
+  let bestMs = -1;
+  for (const [id, t] of Object.entries(turns)) {
+    if (t.startMs > bestMs) {
+      bestMs = t.startMs;
+      best = id;
+    }
+  }
+  return best;
+}
+function resolveTurn(conv, key, nowMs) {
+  const existing = conv.turns[key] ?? (key === ACTIVE_TURN ? void 0 : conv.turns[ACTIVE_TURN]);
+  if (existing)
+    return existing;
+  const latest = latestTurnId(conv.turns);
+  return latest ? conv.turns[latest] : newTurnBuffer(key, nowMs);
+}
+function inputHash(input) {
+  const entries = Object.entries(input ?? {}).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+  let serialized;
+  try {
+    serialized = JSON.stringify(entries);
+  } catch {
+    serialized = entries.map(([k]) => k).join(",");
+  }
+  let hash = 2166136261;
+  for (let i = 0; i < serialized.length; i++) {
+    hash ^= serialized.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16);
+}
+function takePendingStart(conv, toolName, toolInput, toolUseId) {
+  const pending = conv.pending_tools;
+  if (!pending || pending.length === 0)
+    return void 0;
+  const hash = inputHash(toolInput);
+  let index = toolUseId ? pending.findIndex((p) => p.tool_use_id != null && p.tool_use_id === toolUseId) : -1;
+  if (index < 0)
+    index = pending.findIndex((p) => p.name === toolName && p.inputHash === hash);
+  if (index < 0)
+    index = pending.findIndex((p) => p.name === toolName);
+  if (index < 0)
+    return void 0;
+  const [claimed] = pending.splice(index, 1);
+  return claimed.startMs;
+}
 function reducePostToolUseFailure(state, input, nowMs) {
-  const conv = getConversationState(state, input.conversation_id);
-  const turn = conv.turns[input.generation_id] ?? newTurnBuffer(input.generation_id, nowMs);
-  turn.model = preferModel(turn.model, input.model);
+  const conv = getConversationState(state, input.session_id);
+  const turn = resolveTurn(conv, turnKey(input), nowMs);
+  const startMs = takePendingStart(conv, input.tool_name, input.tool_input, input.tool_use_id);
   turn.tools.push({
-    tool_use_id: input.tool_use_id,
+    tool_use_id: input.tool_use_id ?? `${input.tool_name}-${turn.tools.length}`,
     name: input.tool_name,
     input: input.tool_input ?? {},
-    error: input.error_message,
-    failure_type: input.failure_type,
-    duration: input.duration,
+    error: input.error ?? (input.is_interrupt ? "interrupted" : "tool failed"),
+    startMs,
     endMs: nowMs
   });
-  conv.turns[input.generation_id] = turn;
+  conv.turns[turn.generation_id] = turn;
   touch(conv);
-  return { ...state, [input.conversation_id]: conv };
+  return { ...state, [input.session_id]: conv };
 }
 
 // dist/hooks/post-tool-use-failure.js
 async function main() {
   const input = await readStdin();
-  const config = initHook(input.workspace_roots?.[0]);
+  const config = initHook(input.cwd);
   if (!config)
     return;
-  debug(`postToolUseFailure ${input.tool_name} conv=${input.conversation_id}`);
+  debug(`PostToolUseFailure ${input.tool_name} session=${input.session_id}`);
   await atomicUpdateState(config.stateFilePath, (s) => reducePostToolUseFailure(s, input, Date.now()));
 }
 main().catch((err) => {
   try {
-    error(`postToolUseFailure hook error: ${err}`);
+    error(`PostToolUseFailure hook error: ${err}`);
   } catch {
   }
   process.exit(1);

@@ -1,6 +1,6 @@
 /**
- * Converters: Cursor hook payloads → LangSmith run shapes (model/provider,
- * usage_metadata, parsed tool_output, multimodal parts).
+ * Converters: Qoder hook payloads → LangSmith run shapes (model/provider,
+ * usage_metadata, parsed tool output, multimodal parts).
  */
 
 import type { UsageFields } from "./types.js";
@@ -9,12 +9,12 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-// ─── Model / provider ────────────────────────────────────────────────────────
+// ─── Model / provider ───────────────────────────────────────────────────────
 
-/** Reasoning-effort / thinking suffixes Cursor appends to model labels. */
+/** Reasoning-effort / thinking suffixes some model labels append. */
 const MODEL_SUFFIXES = new Set(["thinking", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
-/** Explicit Cursor-label → canonical-id overrides for cases the regex can't derive. */
+/** Explicit model-label → canonical-id overrides for cases the regex can't derive. */
 export const CANONICAL_MODEL_MAP: Record<string, string> = {};
 
 /** Lowercase + strip a leading provider prefix some labels carry (e.g. "anthropic/"). */
@@ -25,7 +25,7 @@ function normKey(model: string): string {
     .replace(/^[a-z]+\//, "");
 }
 
-/** Canonicalize a Cursor model label to LangSmith's price-table id (Claude reordered by version). */
+/** Canonicalize a model label to LangSmith's price-table id (Claude reordered by version). */
 export function canonicalModelId(model: string): string {
   const key = normKey(model);
   if (CANONICAL_MODEL_MAP[key]) return CANONICAL_MODEL_MAP[key];
@@ -42,8 +42,8 @@ export function canonicalModelId(model: string): string {
 /** Map a model-label prefix to a LangSmith ls_provider. */
 function providerFor(model: string): string | undefined {
   const m = model.toLowerCase();
-  if (m === "default" || m === "auto" || m.startsWith("composer") || m.startsWith("cursor")) {
-    return "cursor";
+  if (m === "default" || m === "auto" || m.startsWith("qoder") || m.startsWith("qmodel")) {
+    return "qoder";
   }
   if (m.startsWith("claude")) return "anthropic";
   if (/^(gpt|o\d)/.test(m)) return "openai";
@@ -69,22 +69,24 @@ export interface ModelInfo {
   ls_provider?: string;
 }
 
-/** Prefer a concrete model label over "default" (Auto mode). */
+/** Prefer a concrete model label over "default" / "Auto". */
 export function preferModel(
   current: string | undefined,
   incoming: string | undefined,
 ): string | undefined {
-  if (incoming && incoming.toLowerCase() !== "default") return incoming;
+  if (incoming && incoming.toLowerCase() !== "default" && incoming.toLowerCase() !== "auto") {
+    return incoming;
+  }
   return current ?? incoming;
 }
 
-/** Derive { ls_model_name, ls_provider } from a Cursor model label (suffix-stripped, canonical). */
+/** Derive { ls_model_name, ls_provider } from a model label (suffix-stripped, canonical). */
 export function deriveModelInfo(model: string | undefined): ModelInfo {
   const raw = (model ?? "").trim() || "default";
   const stripped = stripModelSuffixes(raw);
-  const deprefixed = stripped.replace(/^cursor-/i, "");
+  const deprefixed = stripped.replace(/^qoder-/i, "");
   const upstream = providerFor(deprefixed);
-  const label = upstream && upstream !== "cursor" ? deprefixed : stripped;
+  const label = upstream && upstream !== "qoder" ? deprefixed : stripped;
   return {
     ls_model_name: canonicalModelId(label),
     ls_provider: providerFor(label) ?? providerFor(raw),
@@ -114,7 +116,7 @@ export function buildUsageMetadata(usage: UsageFields | undefined) {
 
 // ─── Tool output ─────────────────────────────────────────────────────────────
 
-/** postToolUse.tool_output is a JSON-encoded string; parse it, else return raw. */
+/** Qoder tool output arrives as a string; parse it as JSON when possible, else return raw. */
 export function parseToolOutput(raw: unknown): unknown {
   if (typeof raw !== "string") return raw;
   const trimmed = raw.trim();
@@ -126,8 +128,8 @@ export function parseToolOutput(raw: unknown): unknown {
   }
 }
 
-/** MCP tool names arrive namespaced as "MCP:<tool>". */
-export const MCP_TOOL_PREFIX = "MCP:";
+/** Qoder MCP tools arrive namespaced as "mcp__<server>__<tool>". */
+export const MCP_TOOL_PREFIX = "mcp__";
 
 /** Join the text parts of an MCP tool result's `content` array, if any. */
 function mcpContentToText(content: unknown): string | undefined {
@@ -140,14 +142,10 @@ function mcpContentToText(content: unknown): string | undefined {
 }
 
 /**
- * MCP tool failures never arrive via postToolUseFailure — Cursor routes them
- * through postToolUse with the error embedded in the (parsed) output. Detect the
- * clean case: an "MCP:"-prefixed tool whose output has `isError === true`, and
- * return a human-readable error string so the run can be flagged as an error.
- *
- * NB: hard protocol errors are laundered by Cursor into `isError: false` (the
- * message survives only as nested text), so they are intentionally NOT caught
- * here — that would require a brittle string heuristic.
+ * Some MCP tool failures surface through PostToolUse with the error embedded in
+ * the (parsed) output rather than through PostToolUseFailure. Detect the clean
+ * case: an "mcp__"-prefixed tool whose output has `isError === true`, and return
+ * a human-readable error string so the run can be flagged as an error.
  */
 export function extractMcpError(toolName: string, output: unknown): string | undefined {
   if (!toolName.startsWith(MCP_TOOL_PREFIX)) return undefined;
@@ -171,49 +169,4 @@ export function normalizeContentPart(part: unknown): unknown {
 export function normalizeContent(content: unknown): unknown {
   if (!Array.isArray(content)) return content;
   return content.map(normalizeContentPart);
-}
-
-// ─── Subagent transcript ─────────────────────────────────────────────────────
-
-/** A tool call recovered from a subagent transcript (inputs only — no output). */
-export interface SubagentToolCall {
-  name: string;
-  input: Record<string, unknown>;
-}
-
-/**
- * UI-only pseudo-tools the agent emits but never fires a real postToolUse for —
- * no I/O worth tracing.
- */
-const SUBAGENT_PSEUDO_TOOLS = new Set(["UpdateCurrentStep"]);
-
-/**
- * Parse a subagent transcript into ordered tool calls (inputs only) and its
- * final assistant text (recorded nowhere else).
- */
-export function parseSubagentTranscript(rows: unknown[]): {
-  toolCalls: SubagentToolCall[];
-  resultText?: string;
-} {
-  const toolCalls: SubagentToolCall[] = [];
-  let resultText: string | undefined;
-
-  for (const row of rows) {
-    if (!isRecord(row) || row.role !== "assistant") continue;
-    const message = isRecord(row.message) ? row.message : undefined;
-    const content = message?.content;
-    if (!Array.isArray(content)) continue;
-
-    for (const part of content) {
-      if (!isRecord(part)) continue;
-      if (part.type === "tool_use" && typeof part.name === "string") {
-        if (SUBAGENT_PSEUDO_TOOLS.has(part.name)) continue;
-        toolCalls.push({ name: part.name, input: isRecord(part.input) ? part.input : {} });
-      } else if (part.type === "text" && typeof part.text === "string" && part.text.trim()) {
-        resultText = part.text; // keep the last non-empty assistant text
-      }
-    }
-  }
-
-  return { toolCalls, resultText };
 }

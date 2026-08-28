@@ -28,7 +28,7 @@ import { appendFileSync, mkdirSync, statSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
 import { homedir } from "node:os";
 var MAX_LOG_BYTES = 5 * 1024 * 1024;
-var LOG_FILE = process.env.LANGSMITH_CURSOR_LOG_FILE ?? `${homedir()}/.cursor/langsmith-hook.log`;
+var LOG_FILE = process.env.LANGSMITH_QODER_LOG_FILE ?? `${homedir()}/.qoder/langsmith-hook.log`;
 var debugEnabled = false;
 function initLogger(debug2) {
   debugEnabled = debug2;
@@ -62,11 +62,11 @@ function debug(message) {
 }
 
 // dist/constants.js
-var DEFAULT_PROJECT = "cursor";
+var DEFAULT_PROJECT = "qoder";
 
 // dist/config.js
 import { homedir as homedir2 } from "node:os";
-var LS_INTEGRATION_VERSION = true ? "0.3.5" : process.env.LANGSMITH_CURSOR_INTEGRATION_VERSION || void 0;
+var LS_INTEGRATION_VERSION = true ? "0.1.0" : process.env.LANGSMITH_QODER_INTEGRATION_VERSION || void 0;
 var PROVIDER_HOSTS = {
   github: "github.com",
   gitlab: "gitlab.com",
@@ -106,13 +106,13 @@ function parseRedactExtraRules(value) {
   if (parsed === void 0)
     return void 0;
   if (!Array.isArray(parsed)) {
-    error("LANGSMITH_CURSOR_REDACT_EXTRA must be a JSON array of { pattern, replace }.");
+    error("LANGSMITH_QODER_REDACT_EXTRA must be a JSON array of { pattern, replace }.");
     return void 0;
   }
   const valid = [];
   for (const rule of parsed) {
     if (!isRedactRule(rule)) {
-      error(`Skipping invalid LANGSMITH_CURSOR_REDACT_EXTRA rule: ${JSON.stringify(rule)}`);
+      error(`Skipping invalid LANGSMITH_QODER_REDACT_EXTRA rule: ${JSON.stringify(rule)}`);
       continue;
     }
     valid.push(rule);
@@ -127,7 +127,7 @@ function readConfigFile(file) {
   }
 }
 function getEnv(suffix) {
-  return process.env[`LANGSMITH_CURSOR_${suffix}`] ?? process.env[`LANGSMITH_${suffix}`];
+  return process.env[`LANGSMITH_QODER_${suffix}`] ?? process.env[`LANGSMITH_${suffix}`];
 }
 function normalizeReplicas(replicas) {
   if (!Array.isArray(replicas))
@@ -210,9 +210,9 @@ function getGitInfo(cwd) {
   return result;
 }
 function loadConfig(options) {
-  const cwd = options?.cwd ?? process.env.CURSOR_PROJECT_DIR ?? process.cwd();
-  const globalFile = readConfigFile(join(homedir2(), ".cursor", "langsmith.json"));
-  const localFile = readConfigFile(join(cwd, ".cursor", "langsmith.json"));
+  const cwd = options?.cwd ?? process.env.QODER_CWD ?? process.cwd();
+  const globalFile = readConfigFile(join(homedir2(), ".qoder", "langsmith.json"));
+  const localFile = readConfigFile(join(cwd, ".qoder", "langsmith.json"));
   const envEnabled = parseBoolean(process.env.TRACE_TO_LANGSMITH);
   const envMetadata = parseJson(getEnv("METADATA"));
   const envReplicas = parseJson(getEnv("RUNS_ENDPOINTS"));
@@ -223,12 +223,9 @@ function loadConfig(options) {
   const project = getEnv("PROJECT") ?? localFile?.project ?? globalFile?.project ?? DEFAULT_PROJECT;
   const debug2 = envDebug ?? false;
   const replicas = normalizeReplicas(envReplicas ?? localFile?.replicas ?? globalFile?.replicas);
-  const attachmentsEnabled = parseBoolean(getEnv("ATTACHMENTS")) ?? localFile?.attachments ?? globalFile?.attachments ?? true;
-  const systemPromptEnabled = parseBoolean(getEnv("SYSTEM_PROMPT")) ?? localFile?.system_prompt ?? globalFile?.system_prompt ?? true;
-  const cursorDbPath = getEnv("DB_PATH") ?? localFile?.cursor_db_path ?? globalFile?.cursor_db_path;
   const redact = parseBoolean(getEnv("REDACT")) ?? localFile?.redact ?? globalFile?.redact ?? true;
   const redactExtraRules = parseRedactExtraRules(getEnv("REDACT_EXTRA"));
-  const stateFilePath = process.env.LANGSMITH_CURSOR_STATE_FILE ?? join(homedir2(), ".cursor", "langsmith-state.json");
+  const stateFilePath = process.env.LANGSMITH_QODER_STATE_FILE ?? join(homedir2(), ".qoder", "langsmith-state.json");
   const baseMetadata = { cwd };
   if (LS_INTEGRATION_VERSION)
     baseMetadata.ls_integration_version = LS_INTEGRATION_VERSION;
@@ -260,9 +257,6 @@ function loadConfig(options) {
     stateFilePath,
     replicas,
     customMetadata,
-    attachmentsEnabled,
-    systemPromptEnabled,
-    cursorDbPath,
     redact,
     redactExtraRules
   };
@@ -276,7 +270,7 @@ function initHook(cwd) {
     return null;
   }
   if (!config.apiKey && (!config.replicas || config.replicas.length === 0)) {
-    error("Tracing enabled but no API key set (langsmith.json api_key, LANGSMITH_CURSOR_API_KEY, or LANGSMITH_API_KEY) and no replicas configured");
+    error("Tracing enabled but no API key set (langsmith.json api_key, LANGSMITH_QODER_API_KEY, or LANGSMITH_API_KEY) and no replicas configured");
     return null;
   }
   return config;
@@ -348,6 +342,11 @@ function newTurnBuffer(generationId, startMs) {
 var CONVERSATION_MAX_AGE_MS = 24 * 60 * 60 * 1e3;
 
 // dist/reducer.js
+var ACTIVE_TURN = "__active__";
+var PENDING_TOOL_MAX_AGE_MS = 10 * 60 * 1e3;
+function turnKey(input) {
+  return input.request_set_id && input.request_set_id.length > 0 ? input.request_set_id : ACTIVE_TURN;
+}
 function touch(conv) {
   conv.updated = (/* @__PURE__ */ new Date()).toISOString();
 }
@@ -363,35 +362,32 @@ function latestTurnId(turns) {
   return best;
 }
 function reduceSubagentStart(state, input, nowMs) {
-  const parentConv = input.parent_conversation_id ?? input.conversation_id;
-  const conv = getConversationState(state, parentConv);
+  const conv = getConversationState(state, input.session_id);
   const turnId = latestTurnId(conv.turns);
-  const turn = turnId ? conv.turns[turnId] : newTurnBuffer(input.generation_id, nowMs);
+  const turn = turnId ? conv.turns[turnId] : newTurnBuffer(turnKey(input), nowMs);
   turn.subagents.push({
-    subagent_id: input.subagent_id,
-    subagent_type: input.subagent_type,
-    task: input.task,
-    model: input.subagent_model ?? input.model,
-    is_parallel_worker: input.is_parallel_worker,
+    subagent_id: input.agent_id,
+    subagent_type: input.agent_type,
+    task: "",
     startMs: nowMs
   });
   conv.turns[turn.generation_id] = turn;
   touch(conv);
-  return { ...state, [parentConv]: conv };
+  return { ...state, [input.session_id]: conv };
 }
 
 // dist/hooks/subagent-start.js
 async function main() {
   const input = await readStdin();
-  const config = initHook(input.workspace_roots?.[0]);
+  const config = initHook(input.cwd);
   if (!config)
     return;
-  debug(`subagentStart ${input.subagent_type} (${input.subagent_id})`);
+  debug(`SubagentStart ${input.agent_type} (${input.agent_id})`);
   await atomicUpdateState(config.stateFilePath, (s) => reduceSubagentStart(s, input, Date.now()));
 }
 main().catch((err) => {
   try {
-    error(`subagentStart hook error: ${err}`);
+    error(`SubagentStart hook error: ${err}`);
   } catch {
   }
   process.exit(1);

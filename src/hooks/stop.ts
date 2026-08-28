@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 /**
- * stop hook — finalizes the turn: posts the LangSmith trace, flushes, clears the
+ * Stop hook — finalizes the turn: posts the LangSmith trace, flushes, clears the
  * buffer. Idempotent; no buffer → no-op.
+ *
+ * Qoder's Stop event is blockable: this hook must NEVER exit 2 (block) and always
+ * exits 0 so it can't stall the agent, even on failure.
  */
 
 import { readStdin } from "../utils/stdin.js";
@@ -9,18 +12,16 @@ import { initHook } from "../utils/hook-init.js";
 import { atomicUpdateState } from "../state.js";
 import { reduceStop } from "../reducer.js";
 import { initTracing, buildTurnRuns, flushPendingTraces } from "../langsmith.js";
-import { resolveTurnAttachments } from "../attachments.js";
-import { resolveSystemPrompts } from "../system-prompt.js";
 import { resolveTurnSteps } from "../conversation-steps.js";
 import { error, debug, warn } from "../logger.js";
-import type { ContentPart, StopInput, TurnBuffer } from "../types.js";
+import type { StopInput, TurnBuffer } from "../types.js";
 
 async function main(): Promise<void> {
   const input = await readStdin<StopInput>();
-  const config = initHook(input.workspace_roots?.[0]);
+  const config = initHook(input.cwd);
   if (!config) return;
 
-  debug(`stop conv=${input.conversation_id} gen=${input.generation_id} status=${input.status}`);
+  debug(`Stop session=${input.session_id} req=${input.request_set_id}`);
   initTracing(
     config.apiKey,
     config.apiUrl,
@@ -40,59 +41,30 @@ async function main(): Promise<void> {
   });
 
   if (!toTrace) {
-    debug("No buffered turn for this generation — nothing to trace");
+    debug("No buffered turn for this request round — nothing to trace");
     return;
   }
 
-  // Best-effort attachment enrichment (read-only DB + disk); never throws, and an
-  // empty result leaves the turn unchanged.
-  let attachments: ContentPart[] = [];
-  if (config.attachmentsEnabled) {
-    attachments = resolveTurnAttachments({
-      conversationId: input.conversation_id,
-      prompt: toTrace.prompt,
-      dbPath: config.cursorDbPath,
-    });
-  }
-
-  // Best-effort system-prompt enrichment (read-only DB + protobuf field decode);
-  // never throws, and undefined leaves the llm runs unchanged.
-  let systemPrompt: string | undefined;
-  if (config.systemPromptEnabled) {
-    // Resolve the main turn + every subagent's child conversation over ONE DB
-    // connection (avoids an open-per-subagent explosion with many subagents).
-    const childIds = toTrace.subagents
-      .map((s) => s.childConversationId)
-      .filter((id): id is string => !!id);
-    const prompts = resolveSystemPrompts({
-      conversationIds: [input.conversation_id, ...childIds],
-      dbPath: config.cursorDbPath,
-    });
-    systemPrompt = prompts.get(input.conversation_id);
-    for (const sub of toTrace.subagents) {
-      if (sub.childConversationId) sub.systemPrompt = prompts.get(sub.childConversationId);
-    }
-  }
-
-  // Best-effort interleaved step fidelity; undefined falls back to the hook-built shape.
+  // Best-effort interleaved step fidelity from the transcript; undefined falls
+  // back to the hook-built decide/answer shape.
   const steps = resolveTurnSteps({
-    conversationId: input.conversation_id,
+    transcriptPath: input.transcript_path,
     toolUseIds: toTrace.tools.map((t) => t.tool_use_id),
-    dbPath: config.cursorDbPath,
   });
+
+  // Repo/git/user attribution the payload exposes directly, layered over config.
+  const payloadMetadata: Record<string, unknown> = {};
+  if (input.extra?.branch) payloadMetadata.git_branch = input.extra.branch;
+  if (input.extra?.repo) payloadMetadata.repository_name = input.extra.repo;
 
   try {
     await buildTurnRuns({
       buffer: toTrace,
-      conversationId: input.conversation_id,
+      conversationId: input.session_id,
       turnNum,
       project: config.project,
-      userEmail: input.user_email,
-      workspaceRoots: input.workspace_roots,
-      customMetadata: config.customMetadata,
-      runtimeVersion: input.cursor_version,
-      attachments,
-      systemPrompt,
+      userEmail: input.extra?.email,
+      customMetadata: { ...config.customMetadata, ...payloadMetadata },
       steps,
     });
   } catch (err) {
@@ -108,6 +80,6 @@ main().catch((err) => {
   } catch {
     /* last resort */
   }
-  // Non-zero exit (never 2 = "block") tells Cursor the hook failed.
-  process.exit(1);
+  // Never block the agent — exit 0 even on failure (Qoder Stop is blockable).
+  process.exit(0);
 });

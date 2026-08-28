@@ -28,7 +28,7 @@ import { appendFileSync, mkdirSync, statSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
 import { homedir } from "node:os";
 var MAX_LOG_BYTES = 5 * 1024 * 1024;
-var LOG_FILE = process.env.LANGSMITH_CURSOR_LOG_FILE ?? `${homedir()}/.cursor/langsmith-hook.log`;
+var LOG_FILE = process.env.LANGSMITH_QODER_LOG_FILE ?? `${homedir()}/.qoder/langsmith-hook.log`;
 var debugEnabled = false;
 function initLogger(debug2) {
   debugEnabled = debug2;
@@ -62,11 +62,11 @@ function debug(message) {
 }
 
 // dist/constants.js
-var DEFAULT_PROJECT = "cursor";
+var DEFAULT_PROJECT = "qoder";
 
 // dist/config.js
 import { homedir as homedir2 } from "node:os";
-var LS_INTEGRATION_VERSION = true ? "0.3.5" : process.env.LANGSMITH_CURSOR_INTEGRATION_VERSION || void 0;
+var LS_INTEGRATION_VERSION = true ? "0.1.0" : process.env.LANGSMITH_QODER_INTEGRATION_VERSION || void 0;
 var PROVIDER_HOSTS = {
   github: "github.com",
   gitlab: "gitlab.com",
@@ -106,13 +106,13 @@ function parseRedactExtraRules(value) {
   if (parsed === void 0)
     return void 0;
   if (!Array.isArray(parsed)) {
-    error("LANGSMITH_CURSOR_REDACT_EXTRA must be a JSON array of { pattern, replace }.");
+    error("LANGSMITH_QODER_REDACT_EXTRA must be a JSON array of { pattern, replace }.");
     return void 0;
   }
   const valid = [];
   for (const rule of parsed) {
     if (!isRedactRule(rule)) {
-      error(`Skipping invalid LANGSMITH_CURSOR_REDACT_EXTRA rule: ${JSON.stringify(rule)}`);
+      error(`Skipping invalid LANGSMITH_QODER_REDACT_EXTRA rule: ${JSON.stringify(rule)}`);
       continue;
     }
     valid.push(rule);
@@ -127,7 +127,7 @@ function readConfigFile(file) {
   }
 }
 function getEnv(suffix) {
-  return process.env[`LANGSMITH_CURSOR_${suffix}`] ?? process.env[`LANGSMITH_${suffix}`];
+  return process.env[`LANGSMITH_QODER_${suffix}`] ?? process.env[`LANGSMITH_${suffix}`];
 }
 function normalizeReplicas(replicas) {
   if (!Array.isArray(replicas))
@@ -210,9 +210,9 @@ function getGitInfo(cwd) {
   return result;
 }
 function loadConfig(options) {
-  const cwd = options?.cwd ?? process.env.CURSOR_PROJECT_DIR ?? process.cwd();
-  const globalFile = readConfigFile(join(homedir2(), ".cursor", "langsmith.json"));
-  const localFile = readConfigFile(join(cwd, ".cursor", "langsmith.json"));
+  const cwd = options?.cwd ?? process.env.QODER_CWD ?? process.cwd();
+  const globalFile = readConfigFile(join(homedir2(), ".qoder", "langsmith.json"));
+  const localFile = readConfigFile(join(cwd, ".qoder", "langsmith.json"));
   const envEnabled = parseBoolean(process.env.TRACE_TO_LANGSMITH);
   const envMetadata = parseJson(getEnv("METADATA"));
   const envReplicas = parseJson(getEnv("RUNS_ENDPOINTS"));
@@ -223,12 +223,9 @@ function loadConfig(options) {
   const project = getEnv("PROJECT") ?? localFile?.project ?? globalFile?.project ?? DEFAULT_PROJECT;
   const debug2 = envDebug ?? false;
   const replicas = normalizeReplicas(envReplicas ?? localFile?.replicas ?? globalFile?.replicas);
-  const attachmentsEnabled = parseBoolean(getEnv("ATTACHMENTS")) ?? localFile?.attachments ?? globalFile?.attachments ?? true;
-  const systemPromptEnabled = parseBoolean(getEnv("SYSTEM_PROMPT")) ?? localFile?.system_prompt ?? globalFile?.system_prompt ?? true;
-  const cursorDbPath = getEnv("DB_PATH") ?? localFile?.cursor_db_path ?? globalFile?.cursor_db_path;
   const redact = parseBoolean(getEnv("REDACT")) ?? localFile?.redact ?? globalFile?.redact ?? true;
   const redactExtraRules = parseRedactExtraRules(getEnv("REDACT_EXTRA"));
-  const stateFilePath = process.env.LANGSMITH_CURSOR_STATE_FILE ?? join(homedir2(), ".cursor", "langsmith-state.json");
+  const stateFilePath = process.env.LANGSMITH_QODER_STATE_FILE ?? join(homedir2(), ".qoder", "langsmith-state.json");
   const baseMetadata = { cwd };
   if (LS_INTEGRATION_VERSION)
     baseMetadata.ls_integration_version = LS_INTEGRATION_VERSION;
@@ -260,9 +257,6 @@ function loadConfig(options) {
     stateFilePath,
     replicas,
     customMetadata,
-    attachmentsEnabled,
-    systemPromptEnabled,
-    cursorDbPath,
     redact,
     redactExtraRules
   };
@@ -276,7 +270,7 @@ function initHook(cwd) {
     return null;
   }
   if (!config.apiKey && (!config.replicas || config.replicas.length === 0)) {
-    error("Tracing enabled but no API key set (langsmith.json api_key, LANGSMITH_CURSOR_API_KEY, or LANGSMITH_API_KEY) and no replicas configured");
+    error("Tracing enabled but no API key set (langsmith.json api_key, LANGSMITH_QODER_API_KEY, or LANGSMITH_API_KEY) and no replicas configured");
     return null;
   }
   return config;
@@ -342,75 +336,30 @@ var CONVERSATION_MAX_AGE_MS = 24 * 60 * 60 * 1e3;
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-var SUBAGENT_PSEUDO_TOOLS = /* @__PURE__ */ new Set(["UpdateCurrentStep"]);
-function parseSubagentTranscript(rows) {
-  const toolCalls = [];
-  let resultText;
-  for (const row of rows) {
-    if (!isRecord(row) || row.role !== "assistant")
-      continue;
-    const message = isRecord(row.message) ? row.message : void 0;
-    const content = message?.content;
-    if (!Array.isArray(content))
-      continue;
-    for (const part of content) {
-      if (!isRecord(part))
-        continue;
-      if (part.type === "tool_use" && typeof part.name === "string") {
-        if (SUBAGENT_PSEUDO_TOOLS.has(part.name))
-          continue;
-        toolCalls.push({ name: part.name, input: isRecord(part.input) ? part.input : {} });
-      } else if (part.type === "text" && typeof part.text === "string" && part.text.trim()) {
-        resultText = part.text;
-      }
-    }
-  }
-  return { toolCalls, resultText };
-}
 
 // dist/reducer.js
+var PENDING_TOOL_MAX_AGE_MS = 10 * 60 * 1e3;
 function touch(conv) {
   conv.updated = (/* @__PURE__ */ new Date()).toISOString();
 }
-function collectTools(conv) {
-  const tools = [];
-  for (const turn of Object.values(conv.turns))
-    tools.push(...turn.tools);
-  return tools.sort((a, b) => a.endMs - b.endMs);
-}
-function findChildConversation(state, parentConv, startMs, nowMs) {
-  const slack = 2e3;
-  let best;
-  let bestScore = 0;
-  for (const [convId, conv] of Object.entries(state)) {
-    if (convId === parentConv || conv.turn_count !== 0)
-      continue;
-    const inWindow = collectTools(conv).filter((t) => t.endMs >= startMs - slack && t.endMs <= nowMs + slack).length;
-    if (inWindow > bestScore) {
-      bestScore = inWindow;
-      best = convId;
-    }
-  }
-  return best;
-}
-function transcriptToolEvent(call, index, count, startMs, endMs) {
+function timeSubagentTools(calls, startMs, endMs) {
   const span = Math.max(0, endMs - startMs);
-  const slice = count > 0 ? span / count : 0;
-  const end = Math.round(startMs + slice * (index + 1));
-  return {
-    tool_use_id: `subagent-tool-${index}`,
-    name: call.name,
-    input: call.input,
+  const slice = calls.length > 0 ? span / calls.length : 0;
+  return calls.map((c, i) => ({
+    tool_use_id: `subagent-tool-${i}`,
+    name: c.name,
+    input: c.input,
+    output: c.output,
+    error: c.error,
     duration: slice / 1e3,
-    endMs: end
-  };
+    endMs: Math.round(startMs + slice * (i + 1))
+  }));
 }
 function reduceSubagentStop(state, input, nowMs, resolved) {
-  const parentConv = input.parent_conversation_id ?? input.conversation_id;
-  const conv = getConversationState(state, parentConv);
+  const conv = getConversationState(state, input.session_id);
   let target;
   for (const turn of Object.values(conv.turns)) {
-    const sub = turn.subagents.find((s) => s.subagent_id === input.subagent_id && s.endMs == null);
+    const sub = turn.subagents.find((s) => s.subagent_id === input.agent_id && s.endMs == null);
     if (sub) {
       target = sub;
       break;
@@ -418,42 +367,32 @@ function reduceSubagentStop(state, input, nowMs, resolved) {
   }
   if (!target) {
     touch(conv);
-    return { ...state, [parentConv]: conv };
+    return { ...state, [input.session_id]: conv };
   }
-  target.status = input.status;
-  target.duration_ms = input.duration_ms;
-  target.description = input.description;
-  target.message_count = input.message_count;
-  target.tool_call_count = input.tool_call_count;
-  target.loop_count = input.loop_count;
+  target.status = target.status ?? "completed";
   target.endMs = nowMs;
-  if (resolved?.resultText)
-    target.resultText = resolved.resultText;
-  let next = { ...state, [parentConv]: conv };
-  const childConv = resolved?.childConversationId ?? findChildConversation(next, parentConv, target.startMs, nowMs);
-  if (childConv && next[childConv]) {
-    target.childConversationId = childConv;
-    target.tools = collectTools(next[childConv]);
-    const { [childConv]: _consumed, ...rest } = next;
-    next = rest;
-  } else if (resolved?.toolCalls?.length) {
-    const calls = resolved.toolCalls;
+  target.resultText = resolved?.resultText ?? input.last_assistant_message;
+  if (resolved?.childConversationId)
     target.childConversationId = resolved.childConversationId;
-    target.tools = calls.map((c, i) => transcriptToolEvent(c, i, calls.length, target.startMs, nowMs));
+  if (resolved?.tools?.length) {
+    target.tools = timeSubagentTools(resolved.tools, target.startMs, nowMs);
+    target.tool_call_count = resolved.tools.length;
   }
   touch(conv);
-  return next;
+  return { ...state, [input.session_id]: conv };
 }
 
-// dist/subagent-transcript.js
-import { readFileSync as readFileSync3, readdirSync, statSync as statSync2 } from "node:fs";
-import { dirname as dirname3, join as join2, basename } from "node:path";
-function normalizeWs(text) {
-  return text.replace(/\s+/g, " ").trim();
-}
+// dist/transcript.js
+import { readFileSync as readFileSync3 } from "node:fs";
 function readJsonl(path) {
   const rows = [];
-  for (const line of readFileSync3(path, "utf-8").split("\n")) {
+  let text;
+  try {
+    text = readFileSync3(path, "utf-8");
+  } catch {
+    return rows;
+  }
+  for (const line of text.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed)
       continue;
@@ -464,62 +403,107 @@ function readJsonl(path) {
   }
   return rows;
 }
-function firstUserText(rows) {
+function transcriptSessionId(rows) {
   for (const row of rows) {
-    if (!isRecord(row) || row.role !== "user")
+    if (isRecord(row) && row.type === "session_meta" && typeof row.sessionId === "string") {
+      return row.sessionId;
+    }
+  }
+  return void 0;
+}
+function assistantContent(row) {
+  if (!isRecord(row) || row.type !== "assistant")
+    return void 0;
+  const message = isRecord(row.message) ? row.message : void 0;
+  return Array.isArray(message?.content) ? message.content : void 0;
+}
+function toolResults(rows) {
+  const map = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    if (!isRecord(row) || row.type !== "user")
       continue;
-    const content = isRecord(row.message) ? row.message.content : void 0;
+    const message = isRecord(row.message) ? row.message : void 0;
+    const content = message?.content;
     if (!Array.isArray(content))
       continue;
-    return content.filter((p) => isRecord(p) && p.type === "text").map((p) => typeof p.text === "string" ? p.text : "").join("");
-  }
-  return "";
-}
-function resolveSubagentTranscript(parentTranscriptPath, task) {
-  if (!parentTranscriptPath)
-    return void 0;
-  try {
-    const dir = join2(dirname3(parentTranscriptPath), "subagents");
-    const files = readdirSync(dir).filter((f) => f.endsWith(".jsonl"));
-    if (files.length === 0)
-      return void 0;
-    const candidates = files.map((f) => {
-      const full = join2(dir, f);
-      return { full, child: basename(f, ".jsonl"), mtime: statSync2(full).mtimeMs };
-    });
-    const wanted = task ? normalizeWs(task).slice(0, 120) : "";
-    let chosen;
-    if (candidates.length === 1) {
-      chosen = candidates[0];
-    } else {
-      const matches = candidates.map((c) => ({ ...c, rows: readJsonl(c.full) })).filter((c) => wanted !== "" && normalizeWs(firstUserText(c.rows)).includes(wanted));
-      const pool = matches.length > 0 ? matches : candidates;
-      chosen = pool.slice().sort((a, b) => b.mtime - a.mtime)[0];
+    for (const part of content) {
+      if (!isRecord(part) || part.type !== "tool_result")
+        continue;
+      const id = typeof part.tool_use_id === "string" ? part.tool_use_id : void 0;
+      if (!id)
+        continue;
+      const text = typeof part.content === "string" ? part.content : Array.isArray(part.content) ? part.content.filter(isRecord).map((p) => typeof p.text === "string" ? p.text : "").join("") : "";
+      map.set(id, { content: text, isError: part.is_error === true });
     }
-    const rows = chosen.rows ?? readJsonl(chosen.full);
-    const { toolCalls, resultText } = parseSubagentTranscript(rows);
-    return { childConversationId: chosen.child, toolCalls, resultText };
-  } catch {
+  }
+  return map;
+}
+
+// dist/subagent-transcript.js
+var PSEUDO_TOOLS = /* @__PURE__ */ new Set(["UpdateCurrentStep", "TodoWrite", "todo_write"]);
+function resolveSubagentTranscript(transcriptPath, readRows = readJsonl) {
+  if (!transcriptPath)
+    return void 0;
+  let rows;
+  try {
+    rows = readRows(transcriptPath);
+  } catch (err) {
+    debug(`subagent-transcript: read failed: ${err}`);
     return void 0;
   }
+  if (rows.length === 0)
+    return void 0;
+  const results = toolResults(rows);
+  const tools = [];
+  let resultText;
+  for (const row of rows) {
+    const content = assistantContent(row);
+    if (!content)
+      continue;
+    for (const part of content) {
+      if (!isRecord(part))
+        continue;
+      if (part.type === "tool_use" && typeof part.name === "string") {
+        if (PSEUDO_TOOLS.has(part.name))
+          continue;
+        const id = typeof part.id === "string" ? part.id : void 0;
+        const result = id ? results.get(id) : void 0;
+        tools.push({
+          name: part.name,
+          input: isRecord(part.input) ? part.input : {},
+          output: result && !result.isError ? result.content : void 0,
+          error: result?.isError ? result.content : void 0
+        });
+      } else if (part.type === "text" && typeof part.text === "string" && part.text.trim()) {
+        resultText = part.text;
+      }
+    }
+  }
+  if (tools.length === 0 && !resultText)
+    return void 0;
+  return {
+    childConversationId: transcriptSessionId(rows),
+    tools: tools.length > 0 ? tools : void 0,
+    resultText
+  };
 }
 
 // dist/hooks/subagent-stop.js
 async function main() {
   const input = await readStdin();
-  const config = initHook(input.workspace_roots?.[0]);
+  const config = initHook(input.cwd);
   if (!config)
     return;
-  debug(`subagentStop ${input.subagent_type} (${input.subagent_id})`);
-  const resolved = resolveSubagentTranscript(input.transcript_path, input.task);
+  debug(`SubagentStop ${input.agent_type} (${input.agent_id})`);
+  const resolved = resolveSubagentTranscript(input.agent_transcript_path);
   if (resolved) {
-    debug(`resolved subagent transcript: child=${resolved.childConversationId}, ${resolved.toolCalls.length} tool call(s)`);
+    debug(`resolved subagent transcript: child=${resolved.childConversationId}, ${resolved.tools?.length ?? 0} tool call(s)`);
   }
   await atomicUpdateState(config.stateFilePath, (s) => reduceSubagentStop(s, input, Date.now(), resolved));
 }
 main().catch((err) => {
   try {
-    error(`subagentStop hook error: ${err}`);
+    error(`SubagentStop hook error: ${err}`);
   } catch {
   }
   process.exit(1);

@@ -1,13 +1,91 @@
 {
-  "version": 1,
   "hooks": {
-    "beforeSubmitPrompt": [{ "command": "node \"${CURSOR_PLUGIN_ROOT}/bundle/guard.js\" before-submit-prompt" }],
-    "afterAgentResponse": [{ "command": "node \"${CURSOR_PLUGIN_ROOT}/bundle/guard.js\" after-agent-response" }],
-    "postToolUse": [{ "command": "node \"${CURSOR_PLUGIN_ROOT}/bundle/guard.js\" post-tool-use" }],
-    "postToolUseFailure": [{ "command": "node \"${CURSOR_PLUGIN_ROOT}/bundle/guard.js\" post-tool-use-failure" }],
-    "subagentStart": [{ "command": "node \"${CURSOR_PLUGIN_ROOT}/bundle/guard.js\" subagent-start" }],
-    "subagentStop": [{ "command": "node \"${CURSOR_PLUGIN_ROOT}/bundle/guard.js\" subagent-stop" }],
-    "stop": [{ "command": "node \"${CURSOR_PLUGIN_ROOT}/bundle/guard.js\" stop" }],
-    "sessionStart": [{ "command": "node \"${CURSOR_PLUGIN_ROOT}/bundle/guard.js\" session-start" }]
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${QODER_PLUGIN_ROOT}/bundle/guard.js\" session-start"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${QODER_PLUGIN_ROOT}/bundle/guard.js\" user-prompt-submit"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${QODER_PLUGIN_ROOT}/bundle/guard.js\" pre-tool-use"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${QODER_PLUGIN_ROOT}/bundle/guard.js\" post-tool-use"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${QODER_PLUGIN_ROOT}/bundle/guard.js\" post-tool-use-failure"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${QODER_PLUGIN_ROOT}/bundle/guard.js\" subagent-start"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${QODER_PLUGIN_ROOT}/bundle/guard.js\" subagent-stop"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${QODER_PLUGIN_ROOT}/bundle/guard.js\" stop" }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${QODER_PLUGIN_ROOT}/bundle/guard.js\" session-end"
+          }
+        ]
+      }
+    ]
   }
 }

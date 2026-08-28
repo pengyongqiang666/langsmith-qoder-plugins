@@ -15,7 +15,7 @@ const NOW = Date.parse("2026-08-07T12:00:00.000Z");
 function cacheFile(): string {
   return join(
     mkdtempSync(join(tmpdir(), "langsmith-node-cache-")),
-    ".cursor",
+    ".qoder",
     "langsmith-node.json",
   );
 }

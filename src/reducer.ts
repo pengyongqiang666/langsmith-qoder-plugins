@@ -8,22 +8,33 @@ import type {
   ConversationState,
   TurnBuffer,
   ToolEvent,
+  PendingToolStart,
   SubagentEvent,
-  BeforeSubmitPromptInput,
+  UserPromptSubmitInput,
+  PreToolUseInput,
   PostToolUseInput,
   PostToolUseFailureInput,
-  AfterAgentResponseInput,
   SubagentStartInput,
   SubagentStopInput,
   StopInput,
+  SessionStartInput,
 } from "./types.js";
 import { getConversationState, newTurnBuffer, pruneOldConversations } from "./state.js";
-import {
-  extractMcpError,
-  parseToolOutput,
-  preferModel,
-  type SubagentToolCall,
-} from "./normalize.js";
+import { extractMcpError, parseToolOutput, preferModel } from "./normalize.js";
+
+/** Turn key when the payload has no request_set_id — one active turn per session. */
+const ACTIVE_TURN = "__active__";
+
+/** A pending PreToolUse start older than this is assumed orphaned (tool blocked/aborted). */
+const PENDING_TOOL_MAX_AGE_MS = 10 * 60 * 1000;
+/** Cap on unpaired PreToolUse starts, so a pathological session can't grow the state file. */
+const PENDING_TOOL_MAX = 64;
+
+function turnKey(input: { request_set_id?: string }): string {
+  return input.request_set_id && input.request_set_id.length > 0
+    ? input.request_set_id
+    : ACTIVE_TURN;
+}
 
 function touch(conv: { updated: string }): void {
   conv.updated = new Date().toISOString();
@@ -42,18 +53,107 @@ function latestTurnId(turns: Record<string, TurnBuffer>): string | undefined {
   return best;
 }
 
-export function reduceBeforeSubmitPrompt(
+/** Resolve the turn buffer for a tool event, falling back to the active/latest turn. */
+function resolveTurn(conv: ConversationState, key: string, nowMs: number): TurnBuffer {
+  const existing = conv.turns[key] ?? (key === ACTIVE_TURN ? undefined : conv.turns[ACTIVE_TURN]);
+  if (existing) return existing;
+  const latest = latestTurnId(conv.turns);
+  return latest ? conv.turns[latest] : newTurnBuffer(key, nowMs);
+}
+
+/** Order-independent FNV-1a hash of a tool input, so pairing survives key reordering. */
+function inputHash(input: Record<string, unknown> | undefined): string {
+  const entries = Object.entries(input ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(entries);
+  } catch {
+    // Circular or otherwise unserializable input — fall back to the key set.
+    serialized = entries.map(([k]) => k).join(",");
+  }
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < serialized.length; i++) {
+    hash ^= serialized.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16);
+}
+
+/** Drop pending starts that never got a Post* event (blocked/aborted tools). */
+function prunePendingTools(pending: PendingToolStart[], nowMs: number): PendingToolStart[] {
+  const cutoff = nowMs - PENDING_TOOL_MAX_AGE_MS;
+  const fresh = pending.filter((p) => p.startMs >= cutoff);
+  return fresh.length > PENDING_TOOL_MAX ? fresh.slice(fresh.length - PENDING_TOOL_MAX) : fresh;
+}
+
+/**
+ * Claim the PreToolUse start time for a completed tool call, removing it from the
+ * pending list. Matching narrows from exact to loose: tool_use_id → name + input
+ * → name (earliest first, so parallel calls pair up FIFO).
+ */
+function takePendingStart(
+  conv: ConversationState,
+  toolName: string,
+  toolInput: Record<string, unknown> | undefined,
+  toolUseId: string | undefined,
+): number | undefined {
+  const pending = conv.pending_tools;
+  if (!pending || pending.length === 0) return undefined;
+
+  const hash = inputHash(toolInput);
+  let index = toolUseId
+    ? pending.findIndex((p) => p.tool_use_id != null && p.tool_use_id === toolUseId)
+    : -1;
+  if (index < 0) index = pending.findIndex((p) => p.name === toolName && p.inputHash === hash);
+  if (index < 0) index = pending.findIndex((p) => p.name === toolName);
+  if (index < 0) return undefined;
+
+  const [claimed] = pending.splice(index, 1);
+  return claimed.startMs;
+}
+
+export function reducePreToolUse(
   state: TracingState,
-  input: BeforeSubmitPromptInput,
+  input: PreToolUseInput,
   nowMs: number,
 ): TracingState {
-  const conv = getConversationState(state, input.conversation_id);
-  const turn = newTurnBuffer(input.generation_id, nowMs);
-  turn.prompt = input.prompt;
-  turn.model = input.model;
-  conv.turns[input.generation_id] = turn;
+  const conv = getConversationState(state, input.session_id);
+  const pending = conv.pending_tools ?? [];
+  pending.push({
+    name: input.tool_name,
+    inputHash: inputHash(input.tool_input),
+    tool_use_id: input.tool_use_id,
+    startMs: nowMs,
+  });
+  conv.pending_tools = prunePendingTools(pending, nowMs);
   touch(conv);
-  return pruneOldConversations({ ...state, [input.conversation_id]: conv });
+  return { ...state, [input.session_id]: conv };
+}
+
+export function reduceSessionStart(
+  state: TracingState,
+  input: SessionStartInput,
+  _nowMs: number,
+): TracingState {
+  const conv = getConversationState(state, input.session_id);
+  if (input.model) conv.model = input.model;
+  touch(conv);
+  return { ...state, [input.session_id]: conv };
+}
+
+export function reduceUserPromptSubmit(
+  state: TracingState,
+  input: UserPromptSubmitInput,
+  nowMs: number,
+): TracingState {
+  const conv = getConversationState(state, input.session_id);
+  const key = turnKey(input);
+  const turn = newTurnBuffer(key, nowMs);
+  turn.prompt = input.prompt;
+  turn.model = conv.model;
+  conv.turns[key] = turn;
+  touch(conv);
+  return pruneOldConversations({ ...state, [input.session_id]: conv });
 }
 
 export function reducePostToolUse(
@@ -61,24 +161,23 @@ export function reducePostToolUse(
   input: PostToolUseInput,
   nowMs: number,
 ): TracingState {
-  const conv = getConversationState(state, input.conversation_id);
-  const turn = conv.turns[input.generation_id] ?? newTurnBuffer(input.generation_id, nowMs);
-  turn.model = preferModel(turn.model, input.model);
-  const output = parseToolOutput(input.tool_output);
+  const conv = getConversationState(state, input.session_id);
+  const turn = resolveTurn(conv, turnKey(input), nowMs);
+  const output = parseToolOutput(input.tool_response);
+  const startMs = takePendingStart(conv, input.tool_name, input.tool_input, input.tool_use_id);
   turn.tools.push({
-    tool_use_id: input.tool_use_id,
+    tool_use_id: input.tool_use_id ?? `${input.tool_name}-${turn.tools.length}`,
     name: input.tool_name,
     input: input.tool_input ?? {},
     output,
-    // Cursor never fires postToolUseFailure for MCP tools; a failed MCP call
-    // arrives here with isError in the output. Flag it so the run is an error.
+    // Some MCP failures arrive here with isError in the output; flag as an error.
     error: extractMcpError(input.tool_name, output),
-    duration: input.duration,
+    startMs,
     endMs: nowMs,
   });
-  conv.turns[input.generation_id] = turn;
+  conv.turns[turn.generation_id] = turn;
   touch(conv);
-  return { ...state, [input.conversation_id]: conv };
+  return { ...state, [input.session_id]: conv };
 }
 
 export function reducePostToolUseFailure(
@@ -86,41 +185,20 @@ export function reducePostToolUseFailure(
   input: PostToolUseFailureInput,
   nowMs: number,
 ): TracingState {
-  const conv = getConversationState(state, input.conversation_id);
-  const turn = conv.turns[input.generation_id] ?? newTurnBuffer(input.generation_id, nowMs);
-  turn.model = preferModel(turn.model, input.model);
+  const conv = getConversationState(state, input.session_id);
+  const turn = resolveTurn(conv, turnKey(input), nowMs);
+  const startMs = takePendingStart(conv, input.tool_name, input.tool_input, input.tool_use_id);
   turn.tools.push({
-    tool_use_id: input.tool_use_id,
+    tool_use_id: input.tool_use_id ?? `${input.tool_name}-${turn.tools.length}`,
     name: input.tool_name,
     input: input.tool_input ?? {},
-    error: input.error_message,
-    failure_type: input.failure_type,
-    duration: input.duration,
+    error: input.error ?? (input.is_interrupt ? "interrupted" : "tool failed"),
+    startMs,
     endMs: nowMs,
   });
-  conv.turns[input.generation_id] = turn;
+  conv.turns[turn.generation_id] = turn;
   touch(conv);
-  return { ...state, [input.conversation_id]: conv };
-}
-
-export function reduceAfterAgentResponse(
-  state: TracingState,
-  input: AfterAgentResponseInput,
-  nowMs: number,
-): TracingState {
-  const conv = getConversationState(state, input.conversation_id);
-  const turn = conv.turns[input.generation_id] ?? newTurnBuffer(input.generation_id, nowMs);
-  turn.finalText = input.text;
-  turn.model = preferModel(turn.model, input.model);
-  turn.usage = {
-    input_tokens: input.input_tokens,
-    output_tokens: input.output_tokens,
-    cache_read_tokens: input.cache_read_tokens,
-    cache_write_tokens: input.cache_write_tokens,
-  };
-  conv.turns[input.generation_id] = turn;
-  touch(conv);
-  return { ...state, [input.conversation_id]: conv };
+  return { ...state, [input.session_id]: conv };
 }
 
 export function reduceSubagentStart(
@@ -128,83 +206,54 @@ export function reduceSubagentStart(
   input: SubagentStartInput,
   nowMs: number,
 ): TracingState {
-  const parentConv = input.parent_conversation_id ?? input.conversation_id;
-  const conv = getConversationState(state, parentConv);
+  const conv = getConversationState(state, input.session_id);
   const turnId = latestTurnId(conv.turns);
-  const turn = turnId ? conv.turns[turnId] : newTurnBuffer(input.generation_id, nowMs);
+  const turn = turnId ? conv.turns[turnId] : newTurnBuffer(turnKey(input), nowMs);
   turn.subagents.push({
-    subagent_id: input.subagent_id,
-    subagent_type: input.subagent_type,
-    task: input.task,
-    model: input.subagent_model ?? input.model,
-    is_parallel_worker: input.is_parallel_worker,
+    subagent_id: input.agent_id,
+    subagent_type: input.agent_type,
+    task: "",
     startMs: nowMs,
   });
   conv.turns[turn.generation_id] = turn;
   touch(conv);
-  return { ...state, [parentConv]: conv };
+  return { ...state, [input.session_id]: conv };
 }
 
-/** Data recovered from the on-disk subagent transcript (resolved in the hook). */
+/** One tool call recovered from a subagent transcript (order = array position). */
+export interface ResolvedSubagentTool {
+  name: string;
+  input: Record<string, unknown>;
+  output?: unknown;
+  error?: string;
+}
+
+/** Data recovered from the subagent's transcript (resolved in the hook). */
 export interface ResolvedSubagent {
-  /** The subagent's own conversation_id (= transcript filename). */
+  /** The subagent's own session id (= transcript filename). */
   childConversationId?: string;
-  /** Tool calls from the transcript (inputs only) — fallback when no child buffer. */
-  toolCalls?: SubagentToolCall[];
+  /** Ordered tool calls from the transcript; timing is synthesized in the reducer. */
+  tools?: ResolvedSubagentTool[];
   resultText?: string;
 }
 
-/** Flatten and time-order every buffered tool event across a conversation. */
-function collectTools(conv: ConversationState): ToolEvent[] {
-  const tools: ToolEvent[] = [];
-  for (const turn of Object.values(conv.turns)) tools.push(...turn.tools);
-  return tools.sort((a, b) => a.endMs - b.endMs);
-}
-
-/**
- * Fallback: link a subagent to the orphan conversation (turn_count 0) whose
- * buffered tools fall in its window. Single-subagent only.
- */
-function findChildConversation(
-  state: TracingState,
-  parentConv: string,
-  startMs: number,
-  nowMs: number,
-): string | undefined {
-  const slack = 2_000;
-  let best: string | undefined;
-  let bestScore = 0;
-  for (const [convId, conv] of Object.entries(state)) {
-    if (convId === parentConv || conv.turn_count !== 0) continue;
-    const inWindow = collectTools(conv).filter(
-      (t) => t.endMs >= startMs - slack && t.endMs <= nowMs + slack,
-    ).length;
-    if (inWindow > bestScore) {
-      bestScore = inWindow;
-      best = convId;
-    }
-  }
-  return best;
-}
-
-/** Synthetic ToolEvent from a transcript tool call, spread across the window. */
-function transcriptToolEvent(
-  call: SubagentToolCall,
-  index: number,
-  count: number,
+/** Spread transcript tool calls across the subagent's [startMs, endMs] window. */
+function timeSubagentTools(
+  calls: ResolvedSubagentTool[],
   startMs: number,
   endMs: number,
-): ToolEvent {
+): ToolEvent[] {
   const span = Math.max(0, endMs - startMs);
-  const slice = count > 0 ? span / count : 0;
-  const end = Math.round(startMs + slice * (index + 1));
-  return {
-    tool_use_id: `subagent-tool-${index}`,
-    name: call.name,
-    input: call.input,
+  const slice = calls.length > 0 ? span / calls.length : 0;
+  return calls.map((c, i) => ({
+    tool_use_id: `subagent-tool-${i}`,
+    name: c.name,
+    input: c.input,
+    output: c.output,
+    error: c.error,
     duration: slice / 1000,
-    endMs: end,
-  };
+    endMs: Math.round(startMs + slice * (i + 1)),
+  }));
 }
 
 export function reduceSubagentStop(
@@ -213,12 +262,11 @@ export function reduceSubagentStop(
   nowMs: number,
   resolved?: ResolvedSubagent,
 ): TracingState {
-  const parentConv = input.parent_conversation_id ?? input.conversation_id;
-  const conv = getConversationState(state, parentConv);
+  const conv = getConversationState(state, input.session_id);
 
   let target: SubagentEvent | undefined;
   for (const turn of Object.values(conv.turns)) {
-    const sub = turn.subagents.find((s) => s.subagent_id === input.subagent_id && s.endMs == null);
+    const sub = turn.subagents.find((s) => s.subagent_id === input.agent_id && s.endMs == null);
     if (sub) {
       target = sub;
       break;
@@ -227,39 +275,20 @@ export function reduceSubagentStop(
 
   if (!target) {
     touch(conv);
-    return { ...state, [parentConv]: conv };
+    return { ...state, [input.session_id]: conv };
   }
 
-  target.status = input.status;
-  target.duration_ms = input.duration_ms;
-  target.description = input.description;
-  target.message_count = input.message_count;
-  target.tool_call_count = input.tool_call_count;
-  target.loop_count = input.loop_count;
+  target.status = target.status ?? "completed";
   target.endMs = nowMs;
-  if (resolved?.resultText) target.resultText = resolved.resultText;
-
-  let next: TracingState = { ...state, [parentConv]: conv };
-
-  // Prefer the child conversation's rich (input+output+duration) buffered tools.
-  const childConv =
-    resolved?.childConversationId ?? findChildConversation(next, parentConv, target.startMs, nowMs);
-  if (childConv && next[childConv]) {
-    target.childConversationId = childConv;
-    target.tools = collectTools(next[childConv]);
-    const { [childConv]: _consumed, ...rest } = next;
-    next = rest;
-  } else if (resolved?.toolCalls?.length) {
-    // Fallback: transcript tool calls (inputs only, synthesized timing).
-    const calls = resolved.toolCalls;
-    target.childConversationId = resolved.childConversationId;
-    target.tools = calls.map((c, i) =>
-      transcriptToolEvent(c, i, calls.length, target.startMs, nowMs),
-    );
+  target.resultText = resolved?.resultText ?? input.last_assistant_message;
+  if (resolved?.childConversationId) target.childConversationId = resolved.childConversationId;
+  if (resolved?.tools?.length) {
+    target.tools = timeSubagentTools(resolved.tools, target.startMs, nowMs);
+    target.tool_call_count = resolved.tools.length;
   }
 
   touch(conv);
-  return next;
+  return { ...state, [input.session_id]: conv };
 }
 
 export interface StopResult {
@@ -270,27 +299,21 @@ export interface StopResult {
 }
 
 export function reduceStop(state: TracingState, input: StopInput, nowMs: number): StopResult {
-  const conv = getConversationState(state, input.conversation_id);
-  const turn = conv.turns[input.generation_id];
+  const conv = getConversationState(state, input.session_id);
+  const key = turnKey(input);
+  const turn = conv.turns[key] ?? conv.turns[ACTIVE_TURN];
   if (!turn) {
     return { state, turnNum: 0 };
   }
 
-  // stop carries the authoritative final usage + status.
-  turn.usage = {
-    input_tokens: input.input_tokens,
-    output_tokens: input.output_tokens,
-    cache_read_tokens: input.cache_read_tokens,
-    cache_write_tokens: input.cache_write_tokens,
-  };
-  turn.status = input.status;
-  turn.model = preferModel(turn.model, input.model);
+  turn.finalText = input.last_assistant_message ?? turn.finalText;
+  turn.model = preferModel(turn.model, conv.model);
 
   const turnNum = conv.turn_count + 1;
-  delete conv.turns[input.generation_id];
+  delete conv.turns[turn.generation_id];
   conv.turn_count += 1;
   touch(conv);
 
-  const nextState = pruneOldConversations({ ...state, [input.conversation_id]: conv }, nowMs);
+  const nextState = pruneOldConversations({ ...state, [input.session_id]: conv }, nowMs);
   return { state: nextState, buffer: turn, turnNum };
 }

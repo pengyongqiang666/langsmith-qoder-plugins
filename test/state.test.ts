@@ -13,7 +13,7 @@ import {
 import type { TracingState } from "../src/types.js";
 
 function tmpStateFile(): string {
-  return join(mkdtempSync(join(tmpdir(), "ls-cursor-")), "state.json");
+  return join(mkdtempSync(join(tmpdir(), "ls-qoder-")), "state.json");
 }
 
 describe("getConversationState / newTurnBuffer", () => {

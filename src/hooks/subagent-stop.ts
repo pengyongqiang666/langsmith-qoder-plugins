@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * subagentStop hook — finalizes a buffered subagent with status + duration.
+ * SubagentStop hook — finalizes a buffered subagent with its transcript-recovered
+ * tools and final answer.
  */
 
 import { readStdin } from "../utils/stdin.js";
@@ -13,17 +14,17 @@ import type { SubagentStopInput } from "../types.js";
 
 async function main(): Promise<void> {
   const input = await readStdin<SubagentStopInput>();
-  const config = initHook(input.workspace_roots?.[0]);
+  const config = initHook(input.cwd);
   if (!config) return;
 
-  debug(`subagentStop ${input.subagent_type} (${input.subagent_id})`);
+  debug(`SubagentStop ${input.agent_type} (${input.agent_id})`);
 
-  // Best-effort: recover the subagent's child conversation id and final answer
-  // from its transcript; reducer falls back to temporal linking.
-  const resolved = resolveSubagentTranscript(input.transcript_path, input.task);
+  // Best-effort: recover the subagent's tool calls and final answer from its
+  // transcript; the reducer falls back to last_assistant_message.
+  const resolved = resolveSubagentTranscript(input.agent_transcript_path);
   if (resolved) {
     debug(
-      `resolved subagent transcript: child=${resolved.childConversationId}, ${resolved.toolCalls.length} tool call(s)`,
+      `resolved subagent transcript: child=${resolved.childConversationId}, ${resolved.tools?.length ?? 0} tool call(s)`,
     );
   }
 
@@ -34,10 +35,10 @@ async function main(): Promise<void> {
 
 main().catch((err) => {
   try {
-    error(`subagentStop hook error: ${err}`);
+    error(`SubagentStop hook error: ${err}`);
   } catch {
     /* last resort */
   }
-  // Non-zero exit (never 2 = "block") tells Cursor the hook failed.
+  // Non-zero exit (never 2 = "block") tells Qoder the hook failed.
   process.exit(1);
 });

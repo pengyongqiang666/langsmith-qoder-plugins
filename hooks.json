@@ -1,13 +1,33 @@
 {
-  "version": 1,
   "hooks": {
-    "beforeSubmitPrompt": [{ "command": "node BUNDLE_DIR/guard.js before-submit-prompt" }],
-    "afterAgentResponse": [{ "command": "node BUNDLE_DIR/guard.js after-agent-response" }],
-    "postToolUse": [{ "command": "node BUNDLE_DIR/guard.js post-tool-use" }],
-    "postToolUseFailure": [{ "command": "node BUNDLE_DIR/guard.js post-tool-use-failure" }],
-    "subagentStart": [{ "command": "node BUNDLE_DIR/guard.js subagent-start" }],
-    "subagentStop": [{ "command": "node BUNDLE_DIR/guard.js subagent-stop" }],
-    "stop": [{ "command": "node BUNDLE_DIR/guard.js stop" }],
-    "sessionStart": [{ "command": "node BUNDLE_DIR/guard.js session-start" }]
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "node BUNDLE_DIR/guard.js session-start" }] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "node BUNDLE_DIR/guard.js user-prompt-submit" }] }
+    ],
+    "PreToolUse": [
+      { "hooks": [{ "type": "command", "command": "node BUNDLE_DIR/guard.js pre-tool-use" }] }
+    ],
+    "PostToolUse": [
+      { "hooks": [{ "type": "command", "command": "node BUNDLE_DIR/guard.js post-tool-use" }] }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node BUNDLE_DIR/guard.js post-tool-use-failure" }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      { "hooks": [{ "type": "command", "command": "node BUNDLE_DIR/guard.js subagent-start" }] }
+    ],
+    "SubagentStop": [
+      { "hooks": [{ "type": "command", "command": "node BUNDLE_DIR/guard.js subagent-stop" }] }
+    ],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "node BUNDLE_DIR/guard.js stop" }] }],
+    "SessionEnd": [
+      { "hooks": [{ "type": "command", "command": "node BUNDLE_DIR/guard.js session-end" }] }
+    ]
   }
 }

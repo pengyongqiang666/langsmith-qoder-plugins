@@ -13,7 +13,7 @@ interface NodePathCache {
 }
 
 export function nodePathCacheFile(): string {
-  return join(homedir(), ".cursor", "langsmith-node.json");
+  return join(homedir(), ".qoder", "langsmith-node.json");
 }
 
 export function readCachedNodePath(

@@ -11,7 +11,7 @@ import {
 } from "../src/normalize.js";
 
 describe("deriveModelInfo / provider mapping", () => {
-  it("maps Cursor model labels to ls_provider and a canonical model id", () => {
+  it("maps model labels to ls_provider and a canonical model id", () => {
     expect(deriveModelInfo("claude-4.6-sonnet-medium-thinking")).toEqual({
       ls_model_name: "claude-sonnet-4-6", // normalized to canonical id
       ls_provider: "anthropic",
@@ -20,31 +20,21 @@ describe("deriveModelInfo / provider mapping", () => {
       ls_model_name: "gpt-5.5",
       ls_provider: "openai",
     });
-    expect(deriveModelInfo("composer-2.5-fast")).toEqual({
-      ls_model_name: "composer-2.5-fast",
-      ls_provider: "cursor",
-    });
     expect(deriveModelInfo("gemini-2.5-pro")).toMatchObject({ ls_provider: "google" });
+    expect(deriveModelInfo("grok-4.5")).toEqual({ ls_model_name: "grok-4.5", ls_provider: "xai" });
   });
 
-  it("strips Cursor's vendor prefix and resolves the underlying provider", () => {
-    expect(deriveModelInfo("cursor-grok-4.5")).toEqual({
-      ls_model_name: "grok-4.5",
-      ls_provider: "xai",
-    });
-    expect(deriveModelInfo("gpt-5.6-luna-max")).toEqual({
-      ls_model_name: "gpt-5.6-luna",
-      ls_provider: "openai",
-    });
-    expect(deriveModelInfo("cursor-small")).toEqual({
-      ls_model_name: "cursor-small",
-      ls_provider: "cursor",
-    });
+  it("treats Auto / 'default' as the qoder provider (unpriced)", () => {
+    expect(deriveModelInfo("default")).toEqual({ ls_model_name: "default", ls_provider: "qoder" });
+    expect(deriveModelInfo(undefined)).toEqual({ ls_model_name: "default", ls_provider: "qoder" });
+    expect(deriveModelInfo("Auto")).toMatchObject({ ls_provider: "qoder" });
   });
 
-  it("treats Auto-mode 'default' as the cursor provider", () => {
-    expect(deriveModelInfo("default")).toEqual({ ls_model_name: "default", ls_provider: "cursor" });
-    expect(deriveModelInfo(undefined)).toEqual({ ls_model_name: "default", ls_provider: "cursor" });
+  it("maps Qoder's qmodel_* labels to the qoder provider, keeping the model id", () => {
+    expect(deriveModelInfo("qmodel_38max")).toEqual({
+      ls_model_name: "qmodel_38max",
+      ls_provider: "qoder",
+    });
   });
 
   it("leaves provider undefined for unknown vendors", () => {
@@ -57,18 +47,16 @@ describe("stripModelSuffixes", () => {
     expect(stripModelSuffixes("gpt-5.5-medium")).toBe("gpt-5.5");
     expect(stripModelSuffixes("claude-4.6-sonnet-medium-thinking")).toBe("claude-4.6-sonnet");
     expect(stripModelSuffixes("gpt-5.5")).toBe("gpt-5.5");
-    expect(stripModelSuffixes("gpt-5.6-luna-max")).toBe("gpt-5.6-luna");
     expect(stripModelSuffixes("gpt-5.6-xhigh")).toBe("gpt-5.6");
-    expect(stripModelSuffixes("composer-2.5-fast")).toBe("composer-2.5-fast");
   });
 });
 
 describe("preferModel", () => {
-  it("prefers a concrete label over default", () => {
+  it("prefers a concrete label over default / Auto", () => {
     expect(preferModel("default", "gpt-5.5")).toBe("gpt-5.5");
     expect(preferModel("gpt-5.5", "default")).toBe("gpt-5.5");
     expect(preferModel(undefined, "default")).toBe("default");
-    expect(preferModel("gpt-5.5-medium", "gpt-5.5")).toBe("gpt-5.5");
+    expect(preferModel("claude-4.5-sonnet", "Auto")).toBe("claude-4.5-sonnet");
   });
 });
 
@@ -94,37 +82,23 @@ describe("buildUsageMetadata", () => {
     expect(buildUsageMetadata({})).toBeUndefined();
     expect(buildUsageMetadata({ input_tokens: 0, output_tokens: 0 })).toBeUndefined();
   });
-
-  it("never attaches cost — LangSmith prices server-side", () => {
-    const u = buildUsageMetadata({
-      input_tokens: 1_000_000,
-      output_tokens: 1_000_000,
-      cache_read_tokens: 5,
-      cache_write_tokens: 5,
-    }) as Record<string, unknown>;
-    expect(u.total_cost).toBeUndefined();
-    expect(u.input_cost).toBeUndefined();
-    expect(u.output_cost).toBeUndefined();
-  });
 });
 
 describe("canonicalModelId", () => {
-  it("reorders Cursor's version-first Claude labels to LangSmith's tier-first ids", () => {
+  it("reorders version-first Claude labels to LangSmith's tier-first ids", () => {
     expect(canonicalModelId("claude-4.6-sonnet")).toBe("claude-sonnet-4-6");
     expect(canonicalModelId("claude-4.8-opus")).toBe("claude-opus-4-8");
     expect(canonicalModelId("claude-3.7-sonnet")).toBe("claude-3-7-sonnet");
   });
 
-  it("passes through ids that already match (GPT, fable, unknowns)", () => {
+  it("passes through ids that already match (GPT, unknowns)", () => {
     expect(canonicalModelId("gpt-5.5")).toBe("gpt-5.5");
-    expect(canonicalModelId("claude-fable-5")).toBe("claude-fable-5");
-    expect(canonicalModelId("composer-2.5-fast")).toBe("composer-2.5-fast");
     expect(canonicalModelId("mystery")).toBe("mystery");
   });
 });
 
 describe("parseToolOutput", () => {
-  it("parses a JSON-encoded tool_output string", () => {
+  it("parses a JSON-encoded tool response string", () => {
     expect(parseToolOutput('{"output":"hello"}')).toEqual({ output: "hello" });
   });
   it("returns the raw value for non-JSON strings and non-strings", () => {
@@ -156,39 +130,34 @@ describe("extractMcpError", () => {
     isError: true,
   };
 
-  it("flags an MCP tool whose output has isError:true, using the content text", () => {
-    expect(extractMcpError("MCP:soft_error", softError)).toBe(
+  it("flags an mcp__ tool whose output has isError:true, using the content text", () => {
+    expect(extractMcpError("mcp__server__soft_error", softError)).toBe(
       "SOFT ERROR: this MCP tool deliberately failed.",
     );
   });
 
   it("falls back to a generic message when isError:true but no text content", () => {
-    expect(extractMcpError("MCP:foo", { isError: true })).toBe("MCP tool returned isError: true");
+    expect(extractMcpError("mcp__server__foo", { isError: true })).toBe(
+      "MCP tool returned isError: true",
+    );
   });
 
   it("ignores successful MCP calls (isError:false or absent)", () => {
     expect(
-      extractMcpError("MCP:foo", { content: [{ type: "text", text: "ok" }], isError: false }),
+      extractMcpError("mcp__server__foo", {
+        content: [{ type: "text", text: "ok" }],
+        isError: false,
+      }),
     ).toBeUndefined();
-    expect(extractMcpError("MCP:foo", { content: [] })).toBeUndefined();
+    expect(extractMcpError("mcp__server__foo", { content: [] })).toBeUndefined();
   });
 
   it("ignores non-MCP tools even when output looks like an error", () => {
     expect(extractMcpError("Read", softError)).toBeUndefined();
   });
 
-  it("does NOT catch laundered hard errors (isError:false)", () => {
-    // Cursor rewrites JSON-RPC protocol errors to isError:false with the message
-    // buried as text — intentionally not flagged (would need a brittle heuristic).
-    const hardError = {
-      content: [{ type: "text", text: '{"error":"MCP error -32603: HARD ERROR"}' }],
-      isError: false,
-    };
-    expect(extractMcpError("MCP:hard_error", hardError)).toBeUndefined();
-  });
-
   it("handles non-record output safely", () => {
-    expect(extractMcpError("MCP:foo", "some string")).toBeUndefined();
-    expect(extractMcpError("MCP:foo", undefined)).toBeUndefined();
+    expect(extractMcpError("mcp__server__foo", "some string")).toBeUndefined();
+    expect(extractMcpError("mcp__server__foo", undefined)).toBeUndefined();
   });
 });

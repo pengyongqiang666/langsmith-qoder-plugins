@@ -340,36 +340,16 @@ function newTurnBuffer(generationId, startMs) {
   };
 }
 var CONVERSATION_MAX_AGE_MS = 24 * 60 * 60 * 1e3;
-
-// dist/normalize.js
-function isRecord(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-function parseToolOutput(raw) {
-  if (typeof raw !== "string")
-    return raw;
-  const trimmed = raw.trim();
-  if (trimmed === "")
-    return raw;
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    return raw;
+function pruneOldConversations(state, now = Date.now()) {
+  const cutoff = now - CONVERSATION_MAX_AGE_MS;
+  const pruned = {};
+  for (const [conversationId, conv] of Object.entries(state)) {
+    const updatedMs = conv.updated ? new Date(conv.updated).getTime() : 0;
+    if (updatedMs >= cutoff) {
+      pruned[conversationId] = conv;
+    }
   }
-}
-var MCP_TOOL_PREFIX = "mcp__";
-function mcpContentToText(content) {
-  if (!Array.isArray(content))
-    return void 0;
-  const texts = content.filter(isRecord).map((part) => typeof part.text === "string" ? part.text : void 0).filter((text) => text != null && text !== "");
-  return texts.length > 0 ? texts.join("\n") : void 0;
-}
-function extractMcpError(toolName, output) {
-  if (!toolName.startsWith(MCP_TOOL_PREFIX))
-    return void 0;
-  if (!isRecord(output) || output.isError !== true)
-    return void 0;
-  return mcpContentToText(output.content) ?? "MCP tool returned isError: true";
+  return pruned;
 }
 
 // dist/reducer.js
@@ -381,86 +361,29 @@ function turnKey(input) {
 function touch(conv) {
   conv.updated = (/* @__PURE__ */ new Date()).toISOString();
 }
-function latestTurnId(turns) {
-  let best;
-  let bestMs = -1;
-  for (const [id, t] of Object.entries(turns)) {
-    if (t.startMs > bestMs) {
-      bestMs = t.startMs;
-      best = id;
-    }
-  }
-  return best;
-}
-function resolveTurn(conv, key, nowMs) {
-  const existing = conv.turns[key] ?? (key === ACTIVE_TURN ? void 0 : conv.turns[ACTIVE_TURN]);
-  if (existing)
-    return existing;
-  const latest = latestTurnId(conv.turns);
-  return latest ? conv.turns[latest] : newTurnBuffer(key, nowMs);
-}
-function inputHash(input) {
-  const entries = Object.entries(input ?? {}).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
-  let serialized;
-  try {
-    serialized = JSON.stringify(entries);
-  } catch {
-    serialized = entries.map(([k]) => k).join(",");
-  }
-  let hash = 2166136261;
-  for (let i = 0; i < serialized.length; i++) {
-    hash ^= serialized.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(16);
-}
-function takePendingStart(conv, toolName, toolInput, toolUseId) {
-  const pending = conv.pending_tools;
-  if (!pending || pending.length === 0)
-    return void 0;
-  const hash = inputHash(toolInput);
-  let index = toolUseId ? pending.findIndex((p) => p.tool_use_id != null && p.tool_use_id === toolUseId) : -1;
-  if (index < 0)
-    index = pending.findIndex((p) => p.name === toolName && p.inputHash === hash);
-  if (index < 0)
-    index = pending.findIndex((p) => p.name === toolName);
-  if (index < 0)
-    return void 0;
-  const [claimed] = pending.splice(index, 1);
-  return claimed.startMs;
-}
-function reducePostToolUse(state, input, nowMs) {
+function reduceUserPromptSubmit(state, input, nowMs) {
   const conv = getConversationState(state, input.session_id);
-  const turn = resolveTurn(conv, turnKey(input), nowMs);
-  const output = parseToolOutput(input.tool_response);
-  const startMs = takePendingStart(conv, input.tool_name, input.tool_input, input.tool_use_id);
-  turn.tools.push({
-    tool_use_id: input.tool_use_id ?? `${input.tool_name}-${turn.tools.length}`,
-    name: input.tool_name,
-    input: input.tool_input ?? {},
-    output,
-    // Some MCP failures arrive here with isError in the output; flag as an error.
-    error: extractMcpError(input.tool_name, output),
-    startMs,
-    endMs: nowMs
-  });
-  conv.turns[turn.generation_id] = turn;
+  const key = turnKey(input);
+  const turn = newTurnBuffer(key, nowMs);
+  turn.prompt = input.prompt;
+  turn.model = conv.model;
+  conv.turns[key] = turn;
   touch(conv);
-  return { ...state, [input.session_id]: conv };
+  return pruneOldConversations({ ...state, [input.session_id]: conv });
 }
 
-// dist/hooks/post-tool-use.js
+// dist/hooks/user-prompt-submit.js
 async function main() {
   const input = await readStdin();
   const config = initHook(input.cwd);
   if (!config)
     return;
-  debug(`PostToolUse ${input.tool_name} session=${input.session_id}`);
-  await atomicUpdateState(config.stateFilePath, (s) => reducePostToolUse(s, input, Date.now()));
+  debug(`UserPromptSubmit session=${input.session_id} req=${input.request_set_id}`);
+  await atomicUpdateState(config.stateFilePath, (s) => reduceUserPromptSubmit(s, input, Date.now()));
 }
 main().catch((err) => {
   try {
-    error(`PostToolUse hook error: ${err}`);
+    error(`UserPromptSubmit hook error: ${err}`);
   } catch {
   }
   process.exit(1);

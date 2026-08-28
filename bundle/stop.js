@@ -622,7 +622,7 @@ import { appendFileSync, mkdirSync, statSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
 import { homedir } from "node:os";
 var MAX_LOG_BYTES = 5 * 1024 * 1024;
-var LOG_FILE = process.env.LANGSMITH_CURSOR_LOG_FILE ?? `${homedir()}/.cursor/langsmith-hook.log`;
+var LOG_FILE = process.env.LANGSMITH_QODER_LOG_FILE ?? `${homedir()}/.qoder/langsmith-hook.log`;
 var debugEnabled = false;
 function initLogger(debug2) {
   debugEnabled = debug2;
@@ -662,13 +662,13 @@ function debug(message) {
 }
 
 // dist/constants.js
-var TURN_RUN_NAME = "Cursor Turn";
-var DEFAULT_TAGS = ["cursor", "coding-agent"];
-var DEFAULT_PROJECT = "cursor";
+var TURN_RUN_NAME = "Qoder Turn";
+var DEFAULT_TAGS = ["qoder", "coding-agent"];
+var DEFAULT_PROJECT = "qoder";
 
 // dist/config.js
 import { homedir as homedir2 } from "node:os";
-var LS_INTEGRATION_VERSION = true ? "0.3.5" : process.env.LANGSMITH_CURSOR_INTEGRATION_VERSION || void 0;
+var LS_INTEGRATION_VERSION = true ? "0.1.0" : process.env.LANGSMITH_QODER_INTEGRATION_VERSION || void 0;
 var PROVIDER_HOSTS = {
   github: "github.com",
   gitlab: "gitlab.com",
@@ -708,13 +708,13 @@ function parseRedactExtraRules(value) {
   if (parsed === void 0)
     return void 0;
   if (!Array.isArray(parsed)) {
-    error("LANGSMITH_CURSOR_REDACT_EXTRA must be a JSON array of { pattern, replace }.");
+    error("LANGSMITH_QODER_REDACT_EXTRA must be a JSON array of { pattern, replace }.");
     return void 0;
   }
   const valid = [];
   for (const rule of parsed) {
     if (!isRedactRule(rule)) {
-      error(`Skipping invalid LANGSMITH_CURSOR_REDACT_EXTRA rule: ${JSON.stringify(rule)}`);
+      error(`Skipping invalid LANGSMITH_QODER_REDACT_EXTRA rule: ${JSON.stringify(rule)}`);
       continue;
     }
     valid.push(rule);
@@ -729,7 +729,7 @@ function readConfigFile(file) {
   }
 }
 function getEnv(suffix) {
-  return process.env[`LANGSMITH_CURSOR_${suffix}`] ?? process.env[`LANGSMITH_${suffix}`];
+  return process.env[`LANGSMITH_QODER_${suffix}`] ?? process.env[`LANGSMITH_${suffix}`];
 }
 function normalizeReplicas(replicas2) {
   if (!Array.isArray(replicas2))
@@ -812,9 +812,9 @@ function getGitInfo(cwd) {
   return result;
 }
 function loadConfig(options) {
-  const cwd = options?.cwd ?? process.env.CURSOR_PROJECT_DIR ?? process.cwd();
-  const globalFile = readConfigFile(join(homedir2(), ".cursor", "langsmith.json"));
-  const localFile = readConfigFile(join(cwd, ".cursor", "langsmith.json"));
+  const cwd = options?.cwd ?? process.env.QODER_CWD ?? process.cwd();
+  const globalFile = readConfigFile(join(homedir2(), ".qoder", "langsmith.json"));
+  const localFile = readConfigFile(join(cwd, ".qoder", "langsmith.json"));
   const envEnabled = parseBoolean(process.env.TRACE_TO_LANGSMITH);
   const envMetadata = parseJson(getEnv("METADATA"));
   const envReplicas = parseJson(getEnv("RUNS_ENDPOINTS"));
@@ -825,12 +825,9 @@ function loadConfig(options) {
   const project = getEnv("PROJECT") ?? localFile?.project ?? globalFile?.project ?? DEFAULT_PROJECT;
   const debug2 = envDebug ?? false;
   const replicas2 = normalizeReplicas(envReplicas ?? localFile?.replicas ?? globalFile?.replicas);
-  const attachmentsEnabled = parseBoolean(getEnv("ATTACHMENTS")) ?? localFile?.attachments ?? globalFile?.attachments ?? true;
-  const systemPromptEnabled = parseBoolean(getEnv("SYSTEM_PROMPT")) ?? localFile?.system_prompt ?? globalFile?.system_prompt ?? true;
-  const cursorDbPath = getEnv("DB_PATH") ?? localFile?.cursor_db_path ?? globalFile?.cursor_db_path;
   const redact = parseBoolean(getEnv("REDACT")) ?? localFile?.redact ?? globalFile?.redact ?? true;
   const redactExtraRules = parseRedactExtraRules(getEnv("REDACT_EXTRA"));
-  const stateFilePath = process.env.LANGSMITH_CURSOR_STATE_FILE ?? join(homedir2(), ".cursor", "langsmith-state.json");
+  const stateFilePath = process.env.LANGSMITH_QODER_STATE_FILE ?? join(homedir2(), ".qoder", "langsmith-state.json");
   const baseMetadata = { cwd };
   if (LS_INTEGRATION_VERSION)
     baseMetadata.ls_integration_version = LS_INTEGRATION_VERSION;
@@ -862,9 +859,6 @@ function loadConfig(options) {
     stateFilePath,
     replicas: replicas2,
     customMetadata,
-    attachmentsEnabled,
-    systemPromptEnabled,
-    cursorDbPath,
     redact,
     redactExtraRules
   };
@@ -878,7 +872,7 @@ function initHook(cwd) {
     return null;
   }
   if (!config.apiKey && (!config.replicas || config.replicas.length === 0)) {
-    error("Tracing enabled but no API key set (langsmith.json api_key, LANGSMITH_CURSOR_API_KEY, or LANGSMITH_API_KEY) and no replicas configured");
+    error("Tracing enabled but no API key set (langsmith.json api_key, LANGSMITH_QODER_API_KEY, or LANGSMITH_API_KEY) and no replicas configured");
     return null;
   }
   return config;
@@ -973,8 +967,8 @@ function canonicalModelId(model) {
 }
 function providerFor(model) {
   const m = model.toLowerCase();
-  if (m === "default" || m === "auto" || m.startsWith("composer") || m.startsWith("cursor")) {
-    return "cursor";
+  if (m === "default" || m === "auto" || m.startsWith("qoder") || m.startsWith("qmodel")) {
+    return "qoder";
   }
   if (m.startsWith("claude"))
     return "anthropic";
@@ -999,16 +993,17 @@ function stripModelSuffixes(model) {
   return parts.join("-");
 }
 function preferModel(current, incoming) {
-  if (incoming && incoming.toLowerCase() !== "default")
+  if (incoming && incoming.toLowerCase() !== "default" && incoming.toLowerCase() !== "auto") {
     return incoming;
+  }
   return current ?? incoming;
 }
 function deriveModelInfo(model) {
   const raw = (model ?? "").trim() || "default";
   const stripped = stripModelSuffixes(raw);
-  const deprefixed = stripped.replace(/^cursor-/i, "");
+  const deprefixed = stripped.replace(/^qoder-/i, "");
   const upstream = providerFor(deprefixed);
-  const label = upstream && upstream !== "cursor" ? deprefixed : stripped;
+  const label = upstream && upstream !== "qoder" ? deprefixed : stripped;
   return {
     ls_model_name: canonicalModelId(label),
     ls_provider: providerFor(label) ?? providerFor(raw)
@@ -1033,28 +1028,28 @@ function buildUsageMetadata(usage) {
 }
 
 // dist/reducer.js
+var ACTIVE_TURN = "__active__";
+var PENDING_TOOL_MAX_AGE_MS = 10 * 60 * 1e3;
+function turnKey(input) {
+  return input.request_set_id && input.request_set_id.length > 0 ? input.request_set_id : ACTIVE_TURN;
+}
 function touch(conv) {
   conv.updated = (/* @__PURE__ */ new Date()).toISOString();
 }
 function reduceStop(state, input, nowMs) {
-  const conv = getConversationState(state, input.conversation_id);
-  const turn = conv.turns[input.generation_id];
+  const conv = getConversationState(state, input.session_id);
+  const key = turnKey(input);
+  const turn = conv.turns[key] ?? conv.turns[ACTIVE_TURN];
   if (!turn) {
     return { state, turnNum: 0 };
   }
-  turn.usage = {
-    input_tokens: input.input_tokens,
-    output_tokens: input.output_tokens,
-    cache_read_tokens: input.cache_read_tokens,
-    cache_write_tokens: input.cache_write_tokens
-  };
-  turn.status = input.status;
-  turn.model = preferModel(turn.model, input.model);
+  turn.finalText = input.last_assistant_message ?? turn.finalText;
+  turn.model = preferModel(turn.model, conv.model);
   const turnNum = conv.turn_count + 1;
-  delete conv.turns[input.generation_id];
+  delete conv.turns[turn.generation_id];
   conv.turn_count += 1;
   touch(conv);
-  const nextState = pruneOldConversations({ ...state, [input.conversation_id]: conv }, nowMs);
+  const nextState = pruneOldConversations({ ...state, [input.session_id]: conv }, nowMs);
   return { state: nextState, buffer: turn, turnNum };
 }
 
@@ -2628,24 +2623,24 @@ var normalizeArch = (arch) => {
     return `other:${arch}`;
   return "unknown";
 };
-var normalizePlatform = (platform2) => {
-  platform2 = platform2.toLowerCase();
-  if (platform2.includes("ios"))
+var normalizePlatform = (platform) => {
+  platform = platform.toLowerCase();
+  if (platform.includes("ios"))
     return "iOS";
-  if (platform2 === "android")
+  if (platform === "android")
     return "Android";
-  if (platform2 === "darwin")
+  if (platform === "darwin")
     return "MacOS";
-  if (platform2 === "win32")
+  if (platform === "win32")
     return "Windows";
-  if (platform2 === "freebsd")
+  if (platform === "freebsd")
     return "FreeBSD";
-  if (platform2 === "openbsd")
+  if (platform === "openbsd")
     return "OpenBSD";
-  if (platform2 === "linux")
+  if (platform === "linux")
     return "Linux";
-  if (platform2)
-    return `Other:${platform2}`;
+  if (platform)
+    return `Other:${platform}`;
   return "Unknown";
 };
 var _platformHeaders;
@@ -13466,8 +13461,8 @@ function createSecretAnonymizer(options) {
 
 // dist/metadata.js
 var LS_AGENT_PURPOSE = "coding";
-var LS_INTEGRATION = "cursor";
-var LS_AGENT_RUNTIME = "Cursor";
+var LS_INTEGRATION = "qoder";
+var LS_AGENT_RUNTIME = "Qoder";
 var LS_TRACE_SCHEMA_VERSION = "coding-agent-v1";
 function codingAgentMetadata(opts) {
   const { agentType, threadId, base, turnId, turnNumber, runtimeVersion, approvalPolicy, subagentId, subagentType, clearSubagent, toolName, runName, runSpecific } = opts;
@@ -13505,464 +13500,41 @@ function codingAgentMetadata(opts) {
   };
 }
 
-// dist/conversation-steps.js
-import { DatabaseSync as DatabaseSync3 } from "node:sqlite";
-import { existsSync as existsSync5 } from "node:fs";
-
-// dist/attachments.js
-import { DatabaseSync } from "node:sqlite";
-import { existsSync as existsSync3, readFileSync as readFileSync5, statSync as statSync3 } from "node:fs";
-import { homedir as homedir3, platform } from "node:os";
-import { basename, join as join2 } from "node:path";
-var MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
-function defaultCursorDbPath() {
-  const home = homedir3();
-  const tail = ["Cursor", "User", "globalStorage", "state.vscdb"];
-  switch (platform()) {
-    case "darwin":
-      return join2(home, "Library", "Application Support", ...tail);
-    case "win32":
-      return join2(process.env.APPDATA ?? join2(home, "AppData", "Roaming"), ...tail);
-    default:
-      return join2(process.env.XDG_CONFIG_HOME ?? join2(home, ".config"), ...tail);
-  }
-}
-function normalizeWs(text) {
-  return text.replace(/\s+/g, " ").trim();
-}
-function queryBubbles(dbPath, conversationId) {
-  const like = `bubbleId:${conversationId}:%`;
-  const db = new DatabaseSync(dbPath, { readOnly: true });
+// dist/transcript.js
+import { readFileSync as readFileSync5 } from "node:fs";
+function readJsonl(path3) {
+  const rows = [];
+  let text;
   try {
-    const rows = db.prepare("SELECT value FROM cursorDiskKV WHERE key LIKE ?").all(like);
-    const bubbles = [];
-    for (const row of rows) {
-      const text = typeof row.value === "string" ? row.value : row.value instanceof Uint8Array ? Buffer.from(row.value).toString("utf-8") : void 0;
-      if (text === void 0)
-        continue;
-      try {
-        bubbles.push(JSON.parse(text));
-      } catch {
-      }
-    }
-    return bubbles;
-  } finally {
-    db.close();
-  }
-}
-function selectedAttachmentPaths(bubbles, prompt) {
-  const want = prompt ? normalizeWs(prompt) : "";
-  const userImageBubbles = bubbles.filter((b) => isRecord(b) && b.type === 1).map((b) => ({
-    text: typeof b.text === "string" ? normalizeWs(b.text) : "",
-    paths: imagePathsOf(b)
-  })).filter((b) => b.paths.length > 0);
-  let matched;
-  if (want !== "") {
-    matched = userImageBubbles.filter((b) => b.text === want);
-  } else {
-    const empties = userImageBubbles.filter((b) => b.text === "");
-    matched = empties.length === 1 ? empties : [];
-  }
-  const seen = /* @__PURE__ */ new Set();
-  const paths = [];
-  for (const b of matched) {
-    for (const p of b.paths) {
-      if (!seen.has(p)) {
-        seen.add(p);
-        paths.push(p);
-      }
-    }
-  }
-  return paths;
-}
-function imagePathsOf(bubble) {
-  const ctx = isRecord(bubble.context) ? bubble.context : void 0;
-  const imgs = ctx && Array.isArray(ctx.selectedImages) ? ctx.selectedImages : [];
-  const paths = [];
-  for (const im of imgs) {
-    if (isRecord(im) && typeof im.path === "string" && im.path)
-      paths.push(im.path);
-  }
-  return paths;
-}
-function sniffMime(buf, path3) {
-  if (buf.length >= 8 && buf[0] === 137 && buf[1] === 80 && buf[2] === 78 && buf[3] === 71) {
-    return "image/png";
-  }
-  if (buf.length >= 3 && buf[0] === 255 && buf[1] === 216 && buf[2] === 255)
-    return "image/jpeg";
-  if (buf.length >= 6) {
-    const sig = buf.toString("ascii", 0, 6);
-    if (sig === "GIF87a" || sig === "GIF89a")
-      return "image/gif";
-  }
-  if (buf.length >= 12 && buf.toString("ascii", 0, 4) === "RIFF" && buf.toString("ascii", 8, 12) === "WEBP") {
-    return "image/webp";
-  }
-  if (buf.length >= 5 && buf.toString("ascii", 0, 5) === "%PDF-")
-    return "application/pdf";
-  const ext = path3.toLowerCase().split(".").pop() ?? "";
-  const byExt = {
-    png: "image/png",
-    jpg: "image/jpeg",
-    jpeg: "image/jpeg",
-    gif: "image/gif",
-    webp: "image/webp",
-    svg: "image/svg+xml",
-    pdf: "application/pdf",
-    txt: "text/plain",
-    md: "text/markdown"
-  };
-  return byExt[ext] ?? "application/octet-stream";
-}
-function placeholder(text) {
-  return { type: "text", text };
-}
-function fileToContentPart(path3) {
-  const name = basename(path3);
-  try {
-    const st = statSync3(path3);
-    if (!st.isFile()) {
-      warn(`attachments: not a file, skipping: ${path3}`);
-      return placeholder(`[attachment skipped: ${name} \u2014 not a file]`);
-    }
-    if (st.size > MAX_ATTACHMENT_BYTES) {
-      warn(`attachments: too large (${st.size} bytes), skipping: ${path3}`);
-      return placeholder(`[attachment too large: ${name} (${st.size} bytes)]`);
-    }
-    const buf = readFileSync5(path3);
-    const mime = sniffMime(buf, path3);
-    const base64 = buf.toString("base64");
-    if (mime.startsWith("image/"))
-      return { type: "image", mime_type: mime, base64 };
-    return { type: "file", mime_type: mime, base64, filename: name };
-  } catch (err) {
-    warn(`attachments: read failed, skipping: ${path3} (${err})`);
-    return placeholder(`[attachment unavailable: ${name}]`);
-  }
-}
-function resolveTurnAttachments(opts) {
-  try {
-    const dbPath = opts.dbPath ?? defaultCursorDbPath();
-    if (!existsSync3(dbPath)) {
-      debug(`attachments: no Cursor DB at ${dbPath}`);
-      return [];
-    }
-    const read = opts.readBubbles ?? queryBubbles;
-    const bubbles = read(dbPath, opts.conversationId);
-    const paths = selectedAttachmentPaths(bubbles, opts.prompt);
-    if (paths.length === 0)
-      return [];
-    const parts = paths.map(fileToContentPart);
-    if (parts.length > 0) {
-      log(`attachments: enriched turn with ${parts.length} attachment(s)`);
-    }
-    return parts;
-  } catch (err) {
-    warn(`attachments: enrichment failed, skipping (${err})`);
-    return [];
-  }
-}
-
-// dist/system-prompt.js
-import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
-import { existsSync as existsSync4 } from "node:fs";
-var ROOT_PROMPT_MESSAGES_FIELD = 1;
-function readVarint(buf, c) {
-  let result = 0;
-  let shift = 1;
-  let byte;
-  do {
-    byte = buf[c.p++];
-    result += (byte & 127) * shift;
-    shift *= 128;
-  } while (byte & 128 && c.p < buf.length);
-  return result;
-}
-function skipVarint(buf, c) {
-  while (c.p < buf.length && buf[c.p++] & 128)
-    ;
-}
-function readProtoLenField(buf, field) {
-  const out = [];
-  const c = { p: 0 };
-  while (c.p < buf.length) {
-    const tag = readVarint(buf, c);
-    const fieldNumber = tag >>> 3;
-    const wireType = tag & 7;
-    switch (wireType) {
-      case 0:
-        skipVarint(buf, c);
-        break;
-      case 1:
-        c.p += 8;
-        break;
-      case 2: {
-        const len = readVarint(buf, c);
-        if (len < 0 || c.p + len > buf.length)
-          return out;
-        if (fieldNumber === field)
-          out.push(buf.subarray(c.p, c.p + len));
-        c.p += len;
-        break;
-      }
-      case 5:
-        c.p += 4;
-        break;
-      default:
-        return out;
-    }
-  }
-  return out;
-}
-function decodeConversationStateBlob(raw) {
-  if (typeof raw !== "string" || raw.length === 0)
-    return void 0;
-  const buf = raw.startsWith("~") ? Buffer.from(raw.slice(1), "base64") : Buffer.from(raw, "hex");
-  return buf.length > 0 ? buf : void 0;
-}
-function systemContentOf(buf) {
-  let msg;
-  try {
-    msg = JSON.parse(buf.toString("utf-8"));
+    text = readFileSync5(path3, "utf-8");
   } catch {
-    return void 0;
+    return rows;
   }
-  if (!isRecord(msg) || msg.role !== "system")
-    return void 0;
-  const content = msg.content;
-  if (typeof content === "string")
-    return content || void 0;
-  if (content == null)
-    return void 0;
-  return JSON.stringify(content);
-}
-function openDbReader(dbPath) {
-  const db = new DatabaseSync2(dbPath, { readOnly: true });
-  const stmt = db.prepare("SELECT value FROM cursorDiskKV WHERE key = ?");
-  return {
-    get(key) {
-      const row = stmt.get(key);
-      const v = row?.value;
-      if (typeof v === "string")
-        return Buffer.from(v);
-      if (v instanceof Uint8Array)
-        return Buffer.from(v);
-      return void 0;
-    },
-    close: () => db.close()
-  };
-}
-function systemPromptFor(reader, conversationId) {
-  try {
-    const composer = reader.get(`composerData:${conversationId}`);
-    if (!composer)
-      return void 0;
-    const parsed = JSON.parse(composer.toString("utf-8"));
-    const blob = decodeConversationStateBlob(isRecord(parsed) ? parsed.conversationState : void 0);
-    if (!blob)
-      return void 0;
-    for (const id of readProtoLenField(blob, ROOT_PROMPT_MESSAGES_FIELD)) {
-      const msg = reader.get(`agentKv:blob:${id.toString("hex")}`);
-      if (!msg)
-        continue;
-      const system = systemContentOf(msg);
-      if (system) {
-        log(`system-prompt: recovered for ${conversationId} (${system.length} chars)`);
-        return system;
-      }
-    }
-    return void 0;
-  } catch (err) {
-    warn(`system-prompt: resolution failed for ${conversationId}, skipping (${err})`);
-    return void 0;
-  }
-}
-function resolveSystemPrompts(opts) {
-  const result = /* @__PURE__ */ new Map();
-  const ids = [...new Set(opts.conversationIds)].filter(Boolean);
-  if (ids.length === 0)
-    return result;
-  try {
-    const dbPath = opts.dbPath ?? defaultCursorDbPath();
-    if (!existsSync4(dbPath)) {
-      debug(`system-prompt: no Cursor DB at ${dbPath}`);
-      return result;
-    }
-    const reader = (opts.openReader ?? openDbReader)(dbPath);
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed)
+      continue;
     try {
-      for (const id of ids) {
-        const system = systemPromptFor(reader, id);
-        if (system)
-          result.set(id, system);
-      }
-    } finally {
-      reader.close();
+      rows.push(JSON.parse(trimmed));
+    } catch {
     }
-  } catch (err) {
-    warn(`system-prompt: resolution failed, skipping (${err})`);
   }
-  return result;
+  return rows;
+}
+function assistantContent(row) {
+  if (!isRecord(row) || row.type !== "assistant")
+    return void 0;
+  const message = isRecord(row.message) ? row.message : void 0;
+  return Array.isArray(message?.content) ? message.content : void 0;
+}
+function isUserPrompt(row) {
+  if (!isRecord(row) || row.type !== "user")
+    return false;
+  const message = isRecord(row.message) ? row.message : void 0;
+  return typeof message?.content === "string";
 }
 
 // dist/conversation-steps.js
-var STATE_TURNS_FIELD = 8;
-var TURN_AGENT_FIELD = 1;
-var AGENT_STEPS_FIELD = 2;
-var STEP_ASSISTANT_FIELD = 1;
-var STEP_TOOL_FIELD = 2;
-var STEP_THINKING_FIELD = 3;
-var MESSAGE_TEXT_FIELD = 1;
-var THINKING_DURATION_FIELD = 2;
-var TOOLCALL_TOOL_USE_ID_FIELD = 57;
-var TOOLCALL_HOOK_CONTEXTS_FIELD = 54;
-var TOOL_FIELD_NAMES = {
-  1: "Shell",
-  3: "Delete",
-  4: "Glob",
-  5: "Grep",
-  8: "Read",
-  9: "UpdateTodos",
-  10: "ReadTodos",
-  12: "Edit",
-  13: "Ls",
-  14: "ReadLints",
-  15: "MCP",
-  16: "SemSearch",
-  17: "CreatePlan",
-  18: "WebSearch",
-  19: "Task",
-  20: "ListMcpResources",
-  21: "ReadMcpResource",
-  22: "ApplyAgentDiff",
-  23: "AskQuestion",
-  24: "Fetch",
-  25: "SwitchMode",
-  28: "GenerateImage",
-  29: "RecordScreen",
-  30: "ComputerUse",
-  31: "WriteShellStdin",
-  32: "Reflect",
-  33: "SetupVmEnvironment",
-  34: "Truncated",
-  35: "StartGrindExecution",
-  36: "StartGrindPlanning",
-  37: "WebFetch",
-  38: "ReportBugfixResults",
-  39: "AiAttribution",
-  40: "PrManagement",
-  41: "McpAuth",
-  42: "Await",
-  43: "BlameByFilePath",
-  44: "GetMcpTools",
-  45: "ReportBug",
-  46: "SetActiveBranch",
-  48: "CommunicateUpdate",
-  49: "SendFinalSummary",
-  50: "UpdatePrCodeTour",
-  51: "ReplaceEnv",
-  52: "EditPrLabels",
-  53: "RecordCiInvestigationFindings",
-  55: "SendMessage",
-  58: "SendToUser"
-};
-function scanFields(buf) {
-  const out = [];
-  let p = 0;
-  const readVarint2 = () => {
-    let result = 0;
-    let shift = 1;
-    let byte;
-    do {
-      byte = buf[p++];
-      result += (byte & 127) * shift;
-      shift *= 128;
-    } while (byte & 128 && p < buf.length);
-    return result;
-  };
-  while (p < buf.length) {
-    const tag = readVarint2();
-    const field = tag >>> 3;
-    const wire = tag & 7;
-    if (field === 0)
-      return out;
-    switch (wire) {
-      case 0:
-        out.push({ field, num: readVarint2() });
-        break;
-      case 1:
-        p += 8;
-        break;
-      case 2: {
-        const len = readVarint2();
-        if (len < 0 || p + len > buf.length)
-          return out;
-        out.push({ field, bytes: buf.subarray(p, p + len) });
-        p += len;
-        break;
-      }
-      case 5:
-        p += 4;
-        break;
-      default:
-        return out;
-    }
-  }
-  return out;
-}
-function firstBytes(buf, field) {
-  for (const f2 of scanFields(buf))
-    if (f2.field === field && f2.bytes)
-      return f2.bytes;
-  return void 0;
-}
-function allBytes(buf, field) {
-  const out = [];
-  for (const f2 of scanFields(buf))
-    if (f2.field === field && f2.bytes)
-      out.push(f2.bytes);
-  return out;
-}
-function firstVarint(buf, field) {
-  for (const f2 of scanFields(buf))
-    if (f2.field === field && f2.num != null)
-      return f2.num;
-  return void 0;
-}
-function decodeStep(buf) {
-  const thinking = firstBytes(buf, STEP_THINKING_FIELD);
-  if (thinking) {
-    const text = firstBytes(thinking, MESSAGE_TEXT_FIELD)?.toString("utf-8");
-    const durationMs = firstVarint(thinking, THINKING_DURATION_FIELD);
-    return { kind: "thinking", text, durationMs };
-  }
-  const tool = firstBytes(buf, STEP_TOOL_FIELD);
-  if (tool) {
-    const toolUseId = firstBytes(tool, TOOLCALL_TOOL_USE_ID_FIELD)?.toString("utf-8");
-    let toolField;
-    for (const f2 of scanFields(tool)) {
-      if (f2.field === TOOLCALL_TOOL_USE_ID_FIELD || f2.field === TOOLCALL_HOOK_CONTEXTS_FIELD) {
-        continue;
-      }
-      toolField = f2.field;
-      break;
-    }
-    return {
-      kind: "tool",
-      toolUseId,
-      toolField,
-      toolName: toolField != null ? TOOL_FIELD_NAMES[toolField] : void 0
-    };
-  }
-  const assistant = firstBytes(buf, STEP_ASSISTANT_FIELD);
-  if (assistant) {
-    return {
-      kind: "assistant",
-      text: firstBytes(assistant, MESSAGE_TEXT_FIELD)?.toString("utf-8")
-    };
-  }
-  return void 0;
-}
 function groupSteps(steps) {
   const rounds = [];
   let current;
@@ -13993,78 +13565,50 @@ ${step.text ?? ""}` : step.text;
   }
   return rounds;
 }
-function openDbReader2(dbPath) {
-  const db = new DatabaseSync3(dbPath, { readOnly: true });
-  const stmt = db.prepare("SELECT value FROM cursorDiskKV WHERE key = ?");
-  return {
-    get(key) {
-      const row = stmt.get(key);
-      const v = row?.value;
-      if (typeof v === "string")
-        return Buffer.from(v);
-      if (v instanceof Uint8Array)
-        return Buffer.from(v);
-      return void 0;
-    },
-    close: () => db.close()
-  };
-}
-var agentKvKey = (blobId) => `agentKv:blob:${blobId.toString("hex")}`;
-function decodeTurnSteps(reader, turnBlobId) {
-  const turnBlob = reader.get(agentKvKey(turnBlobId));
-  if (!turnBlob)
-    return void 0;
-  const agent = firstBytes(turnBlob, TURN_AGENT_FIELD);
-  if (!agent)
-    return void 0;
+function stepsFromTranscript(rows) {
+  let start = 0;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (isUserPrompt(rows[i])) {
+      start = i + 1;
+      break;
+    }
+  }
   const steps = [];
-  for (const stepId of allBytes(agent, AGENT_STEPS_FIELD)) {
-    const stepBlob = reader.get(agentKvKey(stepId));
-    if (!stepBlob)
+  for (let i = start; i < rows.length; i++) {
+    const content = assistantContent(rows[i]);
+    if (!content)
       continue;
-    const step = decodeStep(stepBlob);
-    if (step)
-      steps.push(step);
+    for (const part of content) {
+      if (!isRecord(part))
+        continue;
+      if (part.type === "text" && typeof part.text === "string" && part.text.trim()) {
+        steps.push({ kind: "assistant", text: part.text });
+      } else if (part.type === "tool_use" && typeof part.name === "string") {
+        steps.push({
+          kind: "tool",
+          toolUseId: typeof part.id === "string" ? part.id : void 0,
+          toolName: part.name
+        });
+      }
+    }
   }
   return steps;
 }
 function resolveTurnSteps(opts) {
-  const wanted = new Set(opts.toolUseIds.filter(Boolean));
-  if (wanted.size === 0)
+  const path3 = opts.transcriptPath;
+  if (!path3)
     return void 0;
   try {
-    const dbPath = opts.dbPath ?? defaultCursorDbPath();
-    if (!existsSync5(dbPath)) {
-      debug(`conversation-steps: no Cursor DB at ${dbPath}`);
+    const rows = (opts.readRows ?? readJsonl)(path3);
+    if (rows.length === 0)
       return void 0;
-    }
-    const reader = (opts.openReader ?? openDbReader2)(dbPath);
-    try {
-      const composer = reader.get(`composerData:${opts.conversationId}`);
-      if (!composer)
-        return void 0;
-      const parsed = JSON.parse(composer.toString("utf-8"));
-      const blob = decodeConversationStateBlob(isRecord(parsed) ? parsed.conversationState : void 0);
-      if (!blob)
-        return void 0;
-      const turnIds = allBytes(blob, STATE_TURNS_FIELD);
-      for (let i = turnIds.length - 1; i >= 0; i--) {
-        const steps = decodeTurnSteps(reader, turnIds[i]);
-        if (!steps)
-          continue;
-        const overlap = steps.some((s) => s.kind === "tool" && s.toolUseId && wanted.has(s.toolUseId));
-        if (overlap) {
-          log(`conversation-steps: recovered ${steps.length} step(s) for ${opts.conversationId}`);
-          return steps;
-        }
-      }
-      debug(`conversation-steps: no turn matched buffered tools for ${opts.conversationId}`);
+    const steps = stepsFromTranscript(rows);
+    if (steps.length === 0)
       return void 0;
-    } finally {
-      reader.close();
-    }
+    debug(`conversation-steps: recovered ${steps.length} step(s) from ${path3}`);
+    return steps;
   } catch (err) {
-    warn(`conversation-steps: resolution failed for ${opts.conversationId}, skipping (${err})`);
+    debug(`conversation-steps: transcript parse failed: ${err}`);
     return void 0;
   }
 }
@@ -14100,6 +13644,8 @@ function userMessageContent(prompt, attachments) {
   return [...textPart, ...attachments];
 }
 function toolStartMs(tool) {
+  if (typeof tool.startMs === "number")
+    return Math.max(0, Math.min(tool.startMs, tool.endMs));
   const durMs = (tool.duration ?? 0) * 1e3;
   return Math.max(0, tool.endMs - durMs);
 }
@@ -14174,7 +13720,7 @@ async function buildTurnRuns(options) {
   });
   await turnRun.postRun();
   const { ls_model_name, ls_provider } = deriveModelInfo(buffer.model);
-  const llmName = ls_provider ?? ls_model_name;
+  const llmName = ls_provider && ls_provider !== "qoder" ? ls_provider : ls_model_name;
   const llmMeta = {
     ls_provider,
     ls_model_name,
@@ -14283,7 +13829,7 @@ async function postInterleavedRounds(p) {
     const matched = round.toolSteps.map((ts) => ts.toolUseId != null ? toolMap.get(ts.toolUseId) : void 0).filter((t) => t != null);
     const calls = matched.map((t) => toolCall(t, p.buffer.startMs));
     const textBlocks = round.assistantText ? [{ type: "text", text: round.assistantText }] : [];
-    const assistantContent = [
+    const assistantContent2 = [
       ...thinkingBlocks(round.thinking),
       ...textBlocks,
       ...calls.map((c) => c.toolCallBlock)
@@ -14294,7 +13840,7 @@ async function postInterleavedRounds(p) {
       name: p.llmName,
       run_type: "llm",
       inputs: { messages: withSystem([...msgs], p.systemPrompt) },
-      outputs: { messages: [{ role: "assistant", content: assistantContent }] },
+      outputs: { messages: [{ role: "assistant", content: assistantContent2 }] },
       start_time: llmStart,
       end_time: llmEnd,
       extra: { metadata: codingAgentMetadata({ ...p.ctx, runSpecific: { ...p.llmMeta } }) }
@@ -14302,7 +13848,7 @@ async function postInterleavedRounds(p) {
     await llmRun.postRun();
     for (const t of matched)
       await postToolRun(t, p.turnRun, p.ctx);
-    msgs.push({ role: "assistant", content: assistantContent });
+    msgs.push({ role: "assistant", content: assistantContent2 });
     for (const c of calls)
       msgs.push(c.resultMessage);
     if (matched.length)
@@ -14364,7 +13910,7 @@ async function postSubagentRun(sub, parent, ctx) {
   const endMs = sub.endMs ?? sub.startMs;
   const runName = sub.subagent_type ? `${sub.subagent_type} Subagent` : "Subagent";
   const subModel = deriveModelInfo(sub.model);
-  const llmName = subModel.ls_provider ?? subModel.ls_model_name;
+  const llmName = subModel.ls_provider && subModel.ls_provider !== "qoder" ? subModel.ls_provider : subModel.ls_model_name;
   const llmMeta = {
     ls_provider: subModel.ls_provider,
     ls_model_name: subModel.ls_model_name,
@@ -14397,7 +13943,7 @@ async function postSubagentRun(sub, parent, ctx) {
           ...subModel.ls_provider ? { subagent_provider: subModel.ls_provider } : {},
           ...sub.is_parallel_worker != null ? { subagent_is_parallel_worker: sub.is_parallel_worker } : {},
           ...sub.childConversationId ? { subagent_conversation_id: sub.childConversationId } : {},
-          // Tools we actually captured (authoritative) vs Cursor-reported counts (often 0).
+          // Tools we actually captured (authoritative) vs reported counts.
           subagent_tool_count: tools.length,
           ...sub.message_count != null ? { reported_message_count: sub.message_count } : {},
           ...sub.tool_call_count != null ? { reported_tool_call_count: sub.tool_call_count } : {},
@@ -14477,10 +14023,10 @@ async function postSubagentRun(sub, parent, ctx) {
 // dist/hooks/stop.js
 async function main() {
   const input = await readStdin();
-  const config = initHook(input.workspace_roots?.[0]);
+  const config = initHook(input.cwd);
   if (!config)
     return;
-  debug(`stop conv=${input.conversation_id} gen=${input.generation_id} status=${input.status}`);
+  debug(`Stop session=${input.session_id} req=${input.request_set_id}`);
   initTracing(config.apiKey, config.apiUrl, config.replicas, config.redact, config.redactExtraRules);
   let toTrace;
   let turnNum = 0;
@@ -14491,47 +14037,26 @@ async function main() {
     return r.state;
   });
   if (!toTrace) {
-    debug("No buffered turn for this generation \u2014 nothing to trace");
+    debug("No buffered turn for this request round \u2014 nothing to trace");
     return;
   }
-  let attachments = [];
-  if (config.attachmentsEnabled) {
-    attachments = resolveTurnAttachments({
-      conversationId: input.conversation_id,
-      prompt: toTrace.prompt,
-      dbPath: config.cursorDbPath
-    });
-  }
-  let systemPrompt;
-  if (config.systemPromptEnabled) {
-    const childIds = toTrace.subagents.map((s) => s.childConversationId).filter((id) => !!id);
-    const prompts = resolveSystemPrompts({
-      conversationIds: [input.conversation_id, ...childIds],
-      dbPath: config.cursorDbPath
-    });
-    systemPrompt = prompts.get(input.conversation_id);
-    for (const sub of toTrace.subagents) {
-      if (sub.childConversationId)
-        sub.systemPrompt = prompts.get(sub.childConversationId);
-    }
-  }
   const steps = resolveTurnSteps({
-    conversationId: input.conversation_id,
-    toolUseIds: toTrace.tools.map((t) => t.tool_use_id),
-    dbPath: config.cursorDbPath
+    transcriptPath: input.transcript_path,
+    toolUseIds: toTrace.tools.map((t) => t.tool_use_id)
   });
+  const payloadMetadata = {};
+  if (input.extra?.branch)
+    payloadMetadata.git_branch = input.extra.branch;
+  if (input.extra?.repo)
+    payloadMetadata.repository_name = input.extra.repo;
   try {
     await buildTurnRuns({
       buffer: toTrace,
-      conversationId: input.conversation_id,
+      conversationId: input.session_id,
       turnNum,
       project: config.project,
-      userEmail: input.user_email,
-      workspaceRoots: input.workspace_roots,
-      customMetadata: config.customMetadata,
-      runtimeVersion: input.cursor_version,
-      attachments,
-      systemPrompt,
+      userEmail: input.extra?.email,
+      customMetadata: { ...config.customMetadata, ...payloadMetadata },
       steps
     });
   } catch (err) {
@@ -14544,5 +14069,5 @@ main().catch((err) => {
     warn(`stop hook error: ${err}`);
   } catch {
   }
-  process.exit(1);
+  process.exit(0);
 });

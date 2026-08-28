@@ -89,13 +89,13 @@ export interface BuildTurnOptions {
   workspaceRoots?: string[];
   /** coding-agent-v1 base metadata from config (repo/git/cwd/user/version). */
   customMetadata?: Record<string, unknown>;
-  /** Cursor runtime version (hook `cursor_version`) → ls_agent_runtime_version. */
+  /** Qoder runtime version, when the payload exposes it → ls_agent_runtime_version. */
   runtimeVersion?: string;
-  /** Image/file parts for the user message, recovered from Cursor's DB. */
+  /** Image/file parts for the user message (not exposed by Qoder — reserved). */
   attachments?: ContentPart[];
-  /** The turn's system prompt, recovered from Cursor's DB (prepended to llm runs). */
+  /** The turn's system prompt (not exposed by Qoder — reserved). */
   systemPrompt?: string;
-  /** True interleaved step sequence from Cursor's DB; enables per-round llm/tool fidelity. */
+  /** Interleaved step sequence from the transcript; enables per-round llm/tool fidelity. */
   steps?: Step[];
 }
 
@@ -124,8 +124,12 @@ function userMessageContent(prompt: string, attachments: ContentPart[]): Content
   return [...textPart, ...attachments];
 }
 
-/** Tool start = end − duration (seconds). Clamp so start never exceeds end. */
+/**
+ * Tool start: the PreToolUse timestamp when it was paired, else end − duration
+ * (seconds) for transcript-derived tools. Clamped so start never exceeds end.
+ */
 function toolStartMs(tool: ToolEvent): number {
+  if (typeof tool.startMs === "number") return Math.max(0, Math.min(tool.startMs, tool.endMs));
   const durMs = (tool.duration ?? 0) * 1000;
   return Math.max(0, tool.endMs - durMs);
 }
@@ -225,7 +229,8 @@ export async function buildTurnRuns(options: BuildTurnOptions): Promise<void> {
 
   // 2. llm + tool runs, created in invocation order. Turn-level usage goes on one llm run.
   const { ls_model_name, ls_provider } = deriveModelInfo(buffer.model);
-  const llmName = ls_provider ?? ls_model_name;
+  // Name runs by provider for upstream vendors; keep the model label for the generic qoder provider.
+  const llmName = ls_provider && ls_provider !== "qoder" ? ls_provider : ls_model_name;
   const llmMeta = {
     ls_provider,
     ls_model_name,
@@ -451,7 +456,7 @@ async function postToolRun(
   ctx: MetaCtx,
   clearSubagent = false,
 ): Promise<void> {
-  // Clamp start to the parent's — Cursor tool durations can exceed the turn,
+  // Clamp start to the parent's — tool durations can exceed the turn,
   // mis-sorting tools ahead of the llm.
   const floorMs = typeof parent.start_time === "number" ? parent.start_time : 0;
   const startMs = Math.max(floorMs, toolStartMs(tool));
@@ -493,7 +498,10 @@ async function postSubagentRun(sub: SubagentEvent, parent: RunTree, ctx: MetaCtx
   // Claude Code integration's "general-purpose Subagent".
   const runName = sub.subagent_type ? `${sub.subagent_type} Subagent` : "Subagent";
   const subModel = deriveModelInfo(sub.model);
-  const llmName = subModel.ls_provider ?? subModel.ls_model_name;
+  const llmName =
+    subModel.ls_provider && subModel.ls_provider !== "qoder"
+      ? subModel.ls_provider
+      : subModel.ls_model_name;
   const llmMeta = {
     ls_provider: subModel.ls_provider,
     ls_model_name: subModel.ls_model_name,
@@ -531,7 +539,7 @@ async function postSubagentRun(sub: SubagentEvent, parent: RunTree, ctx: MetaCtx
             ? { subagent_is_parallel_worker: sub.is_parallel_worker }
             : {}),
           ...(sub.childConversationId ? { subagent_conversation_id: sub.childConversationId } : {}),
-          // Tools we actually captured (authoritative) vs Cursor-reported counts (often 0).
+          // Tools we actually captured (authoritative) vs reported counts.
           subagent_tool_count: tools.length,
           ...(sub.message_count != null ? { reported_message_count: sub.message_count } : {}),
           ...(sub.tool_call_count != null ? { reported_tool_call_count: sub.tool_call_count } : {}),

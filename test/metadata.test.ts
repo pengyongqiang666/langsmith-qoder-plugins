@@ -7,7 +7,7 @@ import { mockClient } from "./utils/mock_client.js";
 import { getAssumedTreeFromCalls } from "./utils/tree.js";
 import { initTracing, buildTurnRuns, flushPendingTraces } from "../src/langsmith.js";
 
-const CAPTURE = join(process.cwd(), "test/fixtures/cursor-hooks.jsonl");
+const CAPTURE = join(process.cwd(), "test/fixtures/qoder-hooks.jsonl");
 
 function meta(run: Run): Record<string, unknown> {
   return (run.extra as { metadata?: Record<string, unknown> })?.metadata ?? {};
@@ -16,13 +16,13 @@ function meta(run: Run): Record<string, unknown> {
 // ─── Helper unit tests ────────────────────────────────────────────────────────
 
 describe("codingAgentMetadata helper", () => {
-  it("always emits the identity block with the frozen cursor literals", () => {
+  it("always emits the identity block with the frozen qoder literals", () => {
     const m = codingAgentMetadata({ agentType: "root", threadId: "conv-1" });
     expect(m.ls_agent_purpose).toBe("coding");
     expect(m.ls_agent_type).toBe("root");
     expect(m.ls_agent_kind).toBeUndefined();
-    expect(m.ls_integration).toBe("cursor");
-    expect(m.ls_agent_runtime).toBe("Cursor");
+    expect(m.ls_integration).toBe("qoder");
+    expect(m.ls_agent_runtime).toBe("Qoder");
     expect(m.ls_trace_schema_version).toBe("coding-agent-v1");
     expect(m.thread_id).toBe("conv-1");
   });
@@ -101,12 +101,12 @@ describe("codingAgentMetadata helper", () => {
 
 const ALWAYS = [
   ["ls_agent_purpose", "coding"],
-  ["ls_integration", "cursor"],
-  ["ls_agent_runtime", "Cursor"],
+  ["ls_integration", "qoder"],
+  ["ls_agent_runtime", "Qoder"],
   ["ls_trace_schema_version", "coding-agent-v1"],
 ] as const;
 
-/** Structural run classification (validator's cursor profile). */
+/** Structural run classification (validator's coding-agent profile). */
 function classify(run: Run): "root" | "interrupted" | "subagent" | "llm" | "tool" {
   if (run.run_type === "llm") return "llm";
   if (run.run_type === "tool") return "tool";
@@ -130,10 +130,10 @@ describe("coding-agent-v1 contract on the produced run tree", () => {
       runtimeVersion: "3.7.19",
       userEmail: "dev@example.com",
       customMetadata: {
-        ls_integration_version: "0.3.0",
-        repository_url: "https://github.com/langchain-ai/langsmith-cursor-plugins",
+        ls_integration_version: "0.1.0",
+        repository_url: "https://github.com/langchain-ai/langsmith-qoder-plugins",
         repository_provider: "github",
-        repository_name: "langchain-ai/langsmith-cursor-plugins",
+        repository_name: "langchain-ai/langsmith-qoder-plugins",
         git_branch: "main",
         git_commit_sha: "deadbeef",
         cwd: "/repo",
@@ -168,11 +168,11 @@ describe("coding-agent-v1 contract on the produced run tree", () => {
 
       // thread_id groups the whole tree on the conversation id.
       expect(md.thread_id).toBe(turn.conversationId);
-      // Turn markers + versions land on every run (Cursor exposes turns).
+      // Turn markers + versions land on every run (Qoder exposes turns).
       expect(md.turn_id).toBe(turn.buffer.generation_id);
       expect(md.turn_number).toBe(turn.turnNum);
       expect(md.ls_agent_runtime_version).toBe("3.7.19");
-      expect(md.ls_integration_version).toBe("0.3.0");
+      expect(md.ls_integration_version).toBe("0.1.0");
       expect(md.repository_url).toBeDefined();
       expect(md.git_commit_sha).toBe("deadbeef");
       expect(md.cwd).toBe("/repo");
@@ -187,7 +187,7 @@ describe("coding-agent-v1 contract on the produced run tree", () => {
         expect(md.ls_subagent_id).toBeDefined();
         expect(md.ls_subagent_type).toBe("explore");
       }
-      // approval_policy is omitted for Cursor → must appear nowhere.
+      // approval_policy is omitted for Qoder → must appear nowhere.
       expect(md).not.toHaveProperty("approval_policy");
     }
 

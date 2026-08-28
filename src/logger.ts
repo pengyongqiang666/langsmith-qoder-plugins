@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 
 const MAX_LOG_BYTES = 5 * 1024 * 1024; // 5 MB
 
-const LOG_FILE = process.env.LANGSMITH_CURSOR_LOG_FILE ?? `${homedir()}/.cursor/langsmith-hook.log`;
+const LOG_FILE = process.env.LANGSMITH_QODER_LOG_FILE ?? `${homedir()}/.qoder/langsmith-hook.log`;
 
 let debugEnabled = false;
 

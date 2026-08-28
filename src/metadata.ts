@@ -1,5 +1,5 @@
 /**
- * coding-agent-v1 trace metadata for the Cursor integration. See
+ * coding-agent-v1 trace metadata for the Qoder integration. See
  * ../../coding-agent-v1/validator.json for the contract.
  */
 
@@ -7,8 +7,8 @@
 
 export const LS_AGENT_PURPOSE = "coding";
 export type LSAgentType = "root" | "subagent" | "middleware" | "compaction";
-export const LS_INTEGRATION = "cursor";
-export const LS_AGENT_RUNTIME = "Cursor";
+export const LS_INTEGRATION = "qoder";
+export const LS_AGENT_RUNTIME = "Qoder";
 export const LS_TRACE_SCHEMA_VERSION = "coding-agent-v1";
 
 // ─── Helper input ─────────────────────────────────────────────────────────────
@@ -23,11 +23,11 @@ export interface CodingAgentMetadataOptions {
   /** Static base metadata (repo/git/cwd/user/version). Spread LAST so user keys win. */
   base?: Record<string, unknown>;
 
-  /** Per-turn id (`turn_id`) — Cursor `generation_id`. */
+  /** Per-turn id (`turn_id`) — Qoder `request_set_id`. */
   turnId?: string;
   /** 1-based turn index (`turn_number`). */
   turnNumber?: number;
-  /** Cursor runtime version (`ls_agent_runtime_version`) — hook `cursor_version`. */
+  /** Qoder runtime version (`ls_agent_runtime_version`), when the payload exposes it. */
   runtimeVersion?: string;
 
   /** Permission mode for the turn (`approval_policy`). Root + interrupted only. */
@@ -85,7 +85,7 @@ export function codingAgentMetadata(opts: CodingAgentMetadataOptions): Record<st
   if (turnId) meta.turn_id = turnId;
   if (typeof turnNumber === "number") meta.turn_number = turnNumber;
 
-  // Runtime (Cursor) version where known. Integration version lives in `base`.
+  // Runtime (Qoder) version where known. Integration version lives in `base`.
   if (runtimeVersion) meta.ls_agent_runtime_version = runtimeVersion;
 
   // Approval policy — root + interrupted turns only.

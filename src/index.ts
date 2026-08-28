@@ -39,10 +39,10 @@ export {
 export * from "./types.js";
 
 export {
-  reduceBeforeSubmitPrompt,
+  reduceSessionStart,
+  reduceUserPromptSubmit,
   reducePostToolUse,
   reducePostToolUseFailure,
-  reduceAfterAgentResponse,
   reduceSubagentStart,
   reduceSubagentStop,
   reduceStop,

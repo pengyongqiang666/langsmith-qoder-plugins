@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** subagentStart hook — records a subagent invocation on the parent turn buffer. */
+/** SubagentStart hook — records a subagent invocation on the parent turn buffer. */
 
 import { readStdin } from "../utils/stdin.js";
 import { initHook } from "../utils/hook-init.js";
@@ -10,19 +10,19 @@ import type { SubagentStartInput } from "../types.js";
 
 async function main(): Promise<void> {
   const input = await readStdin<SubagentStartInput>();
-  const config = initHook(input.workspace_roots?.[0]);
+  const config = initHook(input.cwd);
   if (!config) return;
 
-  debug(`subagentStart ${input.subagent_type} (${input.subagent_id})`);
+  debug(`SubagentStart ${input.agent_type} (${input.agent_id})`);
   await atomicUpdateState(config.stateFilePath, (s) => reduceSubagentStart(s, input, Date.now()));
 }
 
 main().catch((err) => {
   try {
-    error(`subagentStart hook error: ${err}`);
+    error(`SubagentStart hook error: ${err}`);
   } catch {
     /* last resort */
   }
-  // Non-zero exit (never 2 = "block") tells Cursor the hook failed.
+  // Non-zero exit (never 2 = "block") tells Qoder the hook failed.
   process.exit(1);
 });

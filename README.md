@@ -1,45 +1,39 @@
-# LangSmith Tracing for Cursor
+# LangSmith Tracing for Qoder
 
-Traces Cursor agent turns — prompts, model responses, tool calls, token usage, and subagents — to [LangSmith](https://smith.langchain.com), grouped into threads per conversation.
+Traces Qoder Agent turns — prompts, model responses, tool calls, and subagents — to [LangSmith](https://smith.langchain.com), grouped into threads per conversation.
 
-It works via [Cursor hooks](https://cursor.com/docs/agent/hooks): short-lived hook processes buffer the agent's event stream to a local state file, and each `stop` (one per turn) assembles and posts one LangSmith trace.
+It works via [Qoder hooks](https://docs.qoder.com/extensions/hooks): short-lived hook processes buffer the agent's event stream to a local state file, and each `Stop` (one per turn) assembles and posts one LangSmith trace.
 
 ## How it works
 
-Cursor's transcript file is text-only, so this integration is built entirely from **hook payloads**, not the transcript:
+Qoder's hook payloads are the primary event source; the session **transcript JSONL** (`transcript_path`) enriches each turn with interleaved step fidelity, and each subagent's `agent_transcript_path` supplies its tool calls and final answer:
 
-- `beforeSubmitPrompt` opens a turn buffer (prompt + model).
-- `postToolUse` / `postToolUseFailure` append tool calls.
-- `afterAgentResponse` records the final text + token usage.
-- `subagentStart` / `subagentStop` record subagents (linked to the turn).
-- `stop` finalizes the turn: builds the trace and flushes it to LangSmith.
+- `SessionStart` records the session's model.
+- `UserPromptSubmit` opens a turn buffer (keyed by `request_set_id`).
+- `PreToolUse` records each tool call's start time, so tool runs carry a real duration.
+- `PostToolUse` / `PostToolUseFailure` append tool calls.
+- `SubagentStart` / `SubagentStop` record subagents (tools + result recovered from the subagent transcript).
+- `Stop` finalizes the turn: builds the trace and flushes it to LangSmith.
 
-Each turn is its own trace, grouped into a thread via `thread_id = conversation_id`:
+Each turn is its own trace, grouped into a thread via `thread_id = session_id`:
 
 ```
-Cursor Turn N (chain)
-├── <provider> (llm)   model/provider + token usage, assistant text
-├── Read / Shell / … (tool)
-└── Task (tool)         subagent (type + task)
+Qoder Turn N (chain)
+├── <provider> (llm)   model/provider, assistant text
+├── Read / Bash / … (tool)
+└── explore Subagent (chain)   subagent (type + result), with its tool calls nested underneath
 ```
 
 ## Install
 
-Requirements: Node.js ≥ 22.13 (uses the built-in `node:sqlite` module, with its read-only open option, for attachment enrichment).
+Requirements: Node.js ≥ 18.
 
-The recommended way to install is directly from this GitHub repo in Cursor's settings — **Settings → Plugins → add via repo URL** (`https://github.com/langchain-ai/langsmith-cursor-plugins`). It's one step, requires no clone or build (the precompiled `bundle/` is committed), and is how most users should adopt this.
-
-Then **fully restart Cursor** so it reloads `hooks.json`.
-
-<details>
-<summary>Local / dev install (clone + script)</summary>
-
-For local development, or to install the hooks from a checkout, clone the repo and run the installer:
+Run the installer, which writes the hooks into Qoder's `settings.json` (absolute node + bundle paths, routed through `guard.js`):
 
 ```bash
-# install hooks (writes ~/.cursor/hooks.json by default; merges with existing)
+# install hooks (writes ~/.qoder/settings.json by default; merges with existing)
 node scripts/install.mjs            # user-global (all projects)
-node scripts/install.mjs --project  # project-scoped (./.cursor/hooks.json)
+node scripts/install.mjs --project  # project-scoped (./.qoder/settings.json)
 node scripts/install.mjs --print    # preview without writing
 ```
 
@@ -50,91 +44,84 @@ pnpm install
 pnpm build              # tsc → esbuild → bundle/*.js
 ```
 
-Then **fully restart Cursor** so it reloads `hooks.json`.
+Then **fully restart Qoder** so it reloads `settings.json` (hooks are not hot-reloaded).
 
-</details>
-
-> `bundle/` is committed on purpose — it lets the plugin install (via `.cursor-plugin/`) and the local installer run without a build step. Don't add it to `.gitignore`.
+> `bundle/` is committed on purpose — it lets the installer run without a build step. Don't add it to `.gitignore`.
 
 ## Configure
 
-Create `~/.cursor/langsmith.json` (global) or `./.cursor/langsmith.json` (project):
+Create `~/.qoder/langsmith.json` (global) or `./.qoder/langsmith.json` (project):
 
 ```json
 {
   "enabled": true,
   "api_key": "lsv2_pt_...",
   "api_url": "https://api.smith.langchain.com",
-  "project": "cursor"
+  "project": "qoder"
 }
 ```
 
-Config resolves in this order (later overrides earlier): defaults → `~/.cursor/langsmith.json` → `./.cursor/langsmith.json` → environment variables.
+Config resolves in this order (later overrides earlier): defaults → `~/.qoder/langsmith.json` → `./.qoder/langsmith.json` → environment variables.
 
-Every `LANGSMITH_CURSOR_*` variable also accepts the `LANGSMITH_*` form (the `LANGSMITH_CURSOR_*` name wins when both are set).
+Every `LANGSMITH_QODER_*` variable also accepts the `LANGSMITH_*` form (the `LANGSMITH_QODER_*` name wins when both are set).
 
-| Environment variable              | Config key       | Description                                                                                                                  | Default                           |
-| --------------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
-| `TRACE_TO_LANGSMITH`              | `enabled`        | Master switch — tracing runs only when truthy.                                                                               | `false`                           |
-| `LANGSMITH_CURSOR_API_KEY`        | `api_key`        | LangSmith API key.                                                                                                           | —                                 |
-| `LANGSMITH_CURSOR_ENDPOINT`       | `api_url`        | LangSmith API base URL.                                                                                                      | `https://api.smith.langchain.com` |
-| `LANGSMITH_CURSOR_PROJECT`        | `project`        | Target tracing project.                                                                                                      | `cursor`                          |
-| `LANGSMITH_CURSOR_METADATA`       | `metadata`       | Extra metadata attached to every run (JSON object).                                                                          | —                                 |
-| `LANGSMITH_CURSOR_RUNS_ENDPOINTS` | `replicas`       | Additional replica destinations (JSON array).                                                                                | —                                 |
-| `LANGSMITH_CURSOR_ATTACHMENTS`    | `attachments`    | Enrich turns with image/file attachment bytes from Cursor's DB.                                                              | `true`                            |
-| `LANGSMITH_CURSOR_DB_PATH`        | `cursor_db_path` | Override the Cursor `state.vscdb` path used for attachments.                                                                 | platform default                  |
-| `LANGSMITH_CURSOR_REDACT`         | `redact`         | Redact detected secrets from traced data before upload.                                                                      | `true`                            |
-| `LANGSMITH_CURSOR_REDACT_EXTRA`   | —                | Extra redaction rules: JSON array of `{ pattern, replace }`; each `pattern` is case-sensitive and applied with the `g` flag. | —                                 |
-| `LANGSMITH_CURSOR_DEBUG`          | —                | Verbose hook logging.                                                                                                        | `false`                           |
-| `LANGSMITH_CURSOR_STATE_FILE`     | —                | Override the on-disk event-buffer state file (no `LANGSMITH_*` form).                                                        | `~/.cursor/langsmith-state.json`  |
-| `LANGSMITH_CURSOR_LOG_FILE`       | —                | Override the hook log file (no `LANGSMITH_*` form).                                                                          | `~/.cursor/langsmith-hook.log`    |
+| Environment variable             | Config key | Description                                                  | Default                           |
+| -------------------------------- | ---------- | ------------------------------------------------------------ | --------------------------------- |
+| `TRACE_TO_LANGSMITH`             | `enabled`  | Master switch — tracing runs only when truthy.               | `false`                           |
+| `LANGSMITH_QODER_API_KEY`        | `api_key`  | LangSmith API key.                                           | —                                 |
+| `LANGSMITH_QODER_ENDPOINT`       | `api_url`  | LangSmith API base URL.                                      | `https://api.smith.langchain.com` |
+| `LANGSMITH_QODER_PROJECT`        | `project`  | Target tracing project.                                      | `qoder`                           |
+| `LANGSMITH_QODER_METADATA`       | `metadata` | Extra metadata attached to every run (JSON object).          | —                                 |
+| `LANGSMITH_QODER_RUNS_ENDPOINTS` | `replicas` | Additional replica destinations (JSON array).                | —                                 |
+| `LANGSMITH_QODER_REDACT`         | `redact`   | Redact detected secrets from traced data before upload.      | `true`                            |
+| `LANGSMITH_QODER_REDACT_EXTRA`   | —          | Extra redaction rules: JSON array of `{ pattern, replace }`. | —                                 |
+| `LANGSMITH_QODER_DEBUG`          | —          | Verbose hook logging.                                        | `false`                           |
+| `LANGSMITH_QODER_STATE_FILE`     | —          | Override the on-disk event-buffer state file.                | `~/.qoder/langsmith-state.json`   |
+| `LANGSMITH_QODER_LOG_FILE`       | —          | Override the hook log file.                                  | `~/.qoder/langsmith-hook.log`     |
 
 Tracing only runs when `enabled` (or `TRACE_TO_LANGSMITH=true`) **and** an API key (or replicas) is set.
 
-Verify activity: `tail -f ~/.cursor/langsmith-hook.log`.
-
-### Cost / pricing
-
-We don't compute cost locally. Instead, Cursor's model labels (e.g. `claude-4.6-sonnet`) are normalized to canonical provider ids (e.g. `claude-sonnet-4-6`) as `ls_model_name`, and the token breakdown is sent as `usage_metadata`. LangSmith's server-side model price table matches the canonical id and renders cost in the UI. Auto mode reports `default` (provider `cursor`), which LangSmith can't price.
+Verify activity: `tail -f ~/.qoder/langsmith-hook.log`.
 
 ## What's traced
 
-- **Turns** grouped into threads (`thread_id` = `conversation_id`).
-- **Token usage** per turn (`usage_metadata` on the `llm` run), priced by LangSmith (see [Cost / pricing](#cost--pricing)).
-- **Model / provider** (`ls_model_name`, `ls_provider`) — Cursor's label, normalized to a canonical provider id. Auto mode reports `default` (provider `cursor`).
+- **Turns** grouped into threads (`thread_id` = `session_id`).
+- **Model / provider** (`ls_model_name`, `ls_provider`) — from the session's model setting. `Auto` reports provider `qoder` (unpriced).
 - **Tool calls** (success and failure) with inputs/outputs.
-- **Image/file attachments** — recovered from Cursor's local DB and rendered inline on the user message.
-- **Subagents** as a nested chain run (subagent type + task), with their internal tool calls nested underneath.
+- **Subagents** as a nested chain run (subagent type + result), with their internal tool calls (and I/O) recovered from the subagent transcript.
+- **Interleaved step fidelity** — assistant text and tool calls, ordered from the session transcript.
 
 ## Trace metadata (coding-agent-v1)
 
-Every run carries the shared [`coding-agent-v1`](https://github.com/langchain-ai/langsmith) coding-agent metadata contract on `run.extra.metadata`, built by one helper (`src/metadata.ts`) and propagated to child runs. This lets traces from any coding agent (Claude Code, Codex, Cursor, …) be identified, grouped, and attributed with the same stable keys.
+Every run carries the shared [`coding-agent-v1`](https://docs.langchain.com/langsmith/coding-agent-metadata-contract) coding-agent metadata contract on `run.extra.metadata`, built by one helper (`src/metadata.ts`) and propagated to child runs. This lets traces from any coding agent (Claude Code, Codex, Cursor, Qoder, …) be identified, grouped, and attributed with the same stable keys.
 
-**Always present** (every run): `ls_agent_purpose` (`"coding"`), `ls_agent_type` (`"root"` or `"subagent"` based on the owning agent), `ls_integration` (`"cursor"`), `ls_agent_runtime` (`"Cursor"`), `ls_trace_schema_version` (`"coding-agent-v1"`), `thread_id` (= `conversation_id`).
+**Always present** (every run): `ls_agent_purpose` (`"coding"`), `ls_agent_type` (`"root"` or `"subagent"`), `ls_integration` (`"qoder"`), `ls_agent_runtime` (`"Qoder"`), `ls_trace_schema_version` (`"coding-agent-v1"`), `thread_id` (= `session_id`).
 
-**Present where known** (every run): `ls_integration_version` (plugin version, build-time injected), `ls_agent_runtime_version` (Cursor's `cursor_version`), `turn_id` (= `generation_id`), `turn_number`, `repository_url` / `repository_provider` / `repository_name`, `git_branch`, `git_commit_sha`, `cwd`.
+**Present where known** (every run): `ls_integration_version` (plugin version, build-time injected), `turn_id` (= `request_set_id`), `turn_number`, `repository_name`, `git_branch`, `cwd` — sourced from the payload's `extra` (`email`, `repo`, `branch`) and from `git` in the working directory. On **subagent** runs only: `ls_subagent_id`, `ls_subagent_type`. On **tool** runs only: `ls_tool_name` (emitted only when the run name differs from the native tool name).
 
-**Contextual:** `local_username`, `user_email` (provisional). On **subagent** runs only: `ls_subagent_id`, `ls_subagent_type`. On **tool** runs only: `ls_tool_name` (emitted only when the run name differs from the native tool name). `ls_provider` / `ls_model_name` / `ls_invocation_params` / `usage_metadata` remain on model/tool runs as before.
-
-`user_id`, `sandbox_type`, and `approval_policy` are omitted — Cursor's hooks expose no stable source for them.
-
-## Troubleshooting
-
-**Nothing shows up in LangSmith / `turn_count` stays 0.** Cursor launches hooks from a GUI context, where the `node` on `PATH` is often older than your shell's version-managed node (nvm/mise/asdf). The hook guard resolves Node through your interactive login shell and hands execution to it. The hooks need **Node ≥ 22.13** (for `node:sqlite`).
-
-The hooks run through a small version guard that fails loudly instead of silently. If your node is too old, you'll see a line in `~/.cursor/langsmith-hook.log` (and hook stderr) like:
-
-```
-[langsmith] Node 20.11.0 at /usr/local/bin/node is too old for tracing (need >= 22.13 for node:sqlite). This turn was NOT traced. ...
-```
-
-The path in that message is the exact node the guard ultimately used. To fix it, configure Node ≥ 22.13 in your login shell's startup files. If those files cannot be used non-manually, install Node ≥ 22.13 in a GUI-visible location or launch Cursor from a terminal (`cursor .`) so it inherits your shell environment.
-
-Tail the log to confirm activity: `tail -f ~/.cursor/langsmith-hook.log`.
+**Contextual:** `local_username`, `user_email` (from `extra.email`).
 
 ## Known limitations
 
-- **Subagent token usage** is not available — Cursor exposes no per-subagent usage breakdown via hooks or its local DB, so a subagent's `Task` run carries its tool calls but no token counts.
+Qoder's hooks and transcript don't expose everything Cursor's local DB did, so these are unavailable:
+
+- **Token usage / cost** — Qoder hooks emit no token counts, so `usage_metadata` is omitted and LangSmith cannot price runs.
+- **User-message attachments** — attachment bytes are not exposed to hooks.
+- **System prompt** — not present in the Qoder transcript.
+
+## Troubleshooting
+
+**Nothing shows up in LangSmith / `turn_count` stays 0.** Qoder launches hooks from a GUI context, where the `node` on `PATH` is often older than your shell's version-managed node (nvm/mise/asdf). The hook guard resolves Node through your interactive login shell and hands execution to it (Node ≥ 18 required).
+
+The hooks run through a small version guard that fails loudly instead of silently. If your node is too old, you'll see a line in `~/.qoder/langsmith-hook.log` (and hook stderr) like:
+
+```
+[langsmith] Node 16.20.0 at /usr/local/bin/node is too old for tracing (need >= 18.0). This turn was NOT traced. ...
+```
+
+The path in that message is the exact node the guard ultimately used. To fix it, configure Node ≥ 18 in your login shell's startup files, or launch Qoder from a terminal so it inherits your shell environment.
+
+Tail the log to confirm activity: `tail -f ~/.qoder/langsmith-hook.log`.
 
 ## Development
 
@@ -146,6 +133,10 @@ pnpm lint        # oxlint
 ```
 
 `test/fixtures/` holds captured hook logs and agent transcripts used as replay test fixtures.
+
+> The bundled fixtures are synthesized from Qoder's documented hook/transcript schema. Validate them against a real Qoder session (confirm `request_set_id`, `tool_use_id` presence on `PostToolUse` / `PreToolUse`, and the transcript schema) before relying on edge-case behavior.
+
+Qoder's documented `PreToolUse` payload carries no `tool_use_id`, so a start time is paired to its completed call by `tool_use_id` when present, else by tool name + input, else by tool name (earliest first). An unpaired tool run falls back to a zero-length span rather than a wrong duration.
 
 ## License
 

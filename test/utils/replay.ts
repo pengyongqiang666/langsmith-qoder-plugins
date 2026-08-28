@@ -1,14 +1,18 @@
 import { readFileSync } from "node:fs";
+import { dirname, isAbsolute, resolve } from "node:path";
 import type { TracingState, TurnBuffer, StopInput } from "../../src/types.js";
 import {
-  reduceBeforeSubmitPrompt,
+  reduceSessionStart,
+  reduceUserPromptSubmit,
+  reducePreToolUse,
   reducePostToolUse,
   reducePostToolUseFailure,
-  reduceAfterAgentResponse,
   reduceSubagentStart,
   reduceSubagentStop,
   reduceStop,
+  type ResolvedSubagent,
 } from "../../src/reducer.js";
+import { resolveSubagentTranscript } from "../../src/subagent-transcript.js";
 
 export interface FinalizedTurn {
   conversationId: string;
@@ -24,8 +28,8 @@ interface CaptureLine {
 }
 
 /**
- * Replay captured hooks.jsonl through the pure reducers, using each event's
- * timestamp as the clock. Yields finalized turns and residual state.
+ * Replay a captured Qoder hooks.jsonl through the pure reducers, using each
+ * event's timestamp as the clock. Yields finalized turns and residual state.
  */
 export function replayHookLog(path: string): {
   finalized: FinalizedTurn[];
@@ -45,30 +49,40 @@ export function replayHookLog(path: string): {
     const now = Date.parse(rec.ts);
 
     switch (p.hook_event_name) {
-      case "beforeSubmitPrompt":
-        state = reduceBeforeSubmitPrompt(state, p as never, now);
+      case "SessionStart":
+        state = reduceSessionStart(state, p as never, now);
         break;
-      case "postToolUse":
+      case "UserPromptSubmit":
+        state = reduceUserPromptSubmit(state, p as never, now);
+        break;
+      case "PreToolUse":
+        state = reducePreToolUse(state, p as never, now);
+        break;
+      case "PostToolUse":
         state = reducePostToolUse(state, p as never, now);
         break;
-      case "postToolUseFailure":
+      case "PostToolUseFailure":
         state = reducePostToolUseFailure(state, p as never, now);
         break;
-      case "afterAgentResponse":
-        state = reduceAfterAgentResponse(state, p as never, now);
-        break;
-      case "subagentStart":
+      case "SubagentStart":
         state = reduceSubagentStart(state, p as never, now);
         break;
-      case "subagentStop":
-        state = reduceSubagentStop(state, p as never, now);
+      case "SubagentStop": {
+        const raw = p.agent_transcript_path as string | undefined;
+        // Fixture paths are relative to the hooks fixture; resolve them here.
+        const transcriptPath = raw && !isAbsolute(raw) ? resolve(dirname(path), raw) : raw;
+        const resolved: ResolvedSubagent | undefined = transcriptPath
+          ? resolveSubagentTranscript(transcriptPath)
+          : undefined;
+        state = reduceSubagentStop(state, p as never, now, resolved);
         break;
-      case "stop": {
+      }
+      case "Stop": {
         const r = reduceStop(state, p as never, now);
         state = r.state;
         if (r.buffer) {
           finalized.push({
-            conversationId: p.conversation_id as string,
+            conversationId: p.session_id as string,
             turnNum: r.turnNum,
             buffer: r.buffer,
             stopInput: p as never,
@@ -77,7 +91,7 @@ export function replayHookLog(path: string): {
         break;
       }
       default:
-        break; // beforeReadFile / afterAgentThought / sessionStart / shell / MCP — ignored in v1
+        break; // SessionEnd / PermissionRequest / etc. — ignored in v1
     }
   }
 
